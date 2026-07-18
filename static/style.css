@@ -830,3 +830,16 @@ body::before {
 .status-rejected     { background: var(--danger); color: var(--text-primary); }
 .status-paid         { background: var(--secondary); color: var(--text-primary); }
 .status-verified     { background: var(--success); color: var(--bg-dark); }
+
+/* Document-workflow statuses — Invoices/Receipts six-stage enum.
+   Colour follows risk asymmetry: Missing is alarming (red), Done is green. */
+.status-missing      { background: var(--danger);         color: var(--text-primary); }
+.status-requested    { background: var(--warning);        color: var(--bg-dark); }
+.status-received     { background: var(--secondary);      color: var(--text-primary); }
+.status-translated   { background: var(--accent);         color: var(--bg-dark); }
+.status-done         { background: var(--success);        color: var(--bg-dark); }
+/* .status-sent is defined above (reused from Payments) */
+
+/* Previously-unstyled statuses on other tables */
+.status-on-hold       { background: var(--warning);        color: var(--bg-dark); }
+.status-return-closed { background: var(--text-secondary); color: var(--bg-dark); }
