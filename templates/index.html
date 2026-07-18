@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">           <!-- Character encoding: ALWAYS keep this -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+    <!-- ^ Mobile responsiveness: without this, mobile shows zoomed-out desktop -->
+    <title>Payment Management System</title>  <!-- Browser tab text -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <!-- ^ Jinja2 template tag → Flask renders this as /static/style.css -->
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="header-logo">
+                    <img src="https://hayirsosyal.org/img/logo.webp" alt="Hayır Sosyal ve Yardımlaşma Derneği" class="logo-img">
+                </div>
+                <div class="header-text">
+                    <h1 class="title">Payment Management</h1>
+                    <p class="subtitle">Database Management System</p>
+                </div>
+            </div>
+        </header>
+
+        <!-- Navigation -->
+        <nav class="nav">
+            <button class="nav-btn active" data-table="payments" aria-pressed="true">Payments</button>
+            <button class="nav-btn" data-table="projects" aria-pressed="false">Projects</button>
+            <button class="nav-btn" data-table="invoices" aria-pressed="false">Invoices</button>
+            <button class="nav-btn" data-table="receipts" aria-pressed="false">Receipts</button>
+            <button class="nav-btn" data-table="suppliers" aria-pressed="false">Suppliers</button>
+            <button class="nav-btn" data-table="donors" aria-pressed="false">Donors</button>
+            <button class="nav-btn" data-table="decisions" aria-pressed="false">Decisions</button>
+            <!-- <button class="nav-btn" data-table="requirements">Requirements</button> -->
+        </nav>
+
+        <main>
+            <!-- Action Bar -->
+            <div class="action-bar">
+                <div class="action-left">
+                    <button class="btn-primary" id="addNewBtn">
+                        <span class="btn-icon">+</span>
+                        Add New
+                    </button>
+                    <button class="btn-secondary" id="columnSettingsBtn">
+                        <span class="btn-icon">⚙</span>
+                        Columns
+                    </button>
+                </div>
+                <div class="search-box">
+                    <!-- <label for="searchInput" class="visually-hidden">Search</label> -->
+                    <input type="search" id="searchInput" placeholder="Search...">
+                </div>
+            </div>
+
+            <!-- Data Table -->
+            <div class="table-wrapper">
+                <div class="table-container">
+                    <table class="data-table" id="dataTable">
+                        <thead id="tableHead"></thead>
+                        <tbody id="tableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+        <!-- Loading Spinner -->
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+        </div>
+
+        <!-- Modal for Add/Edit -->
+        <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="modalTitle">Add New Record</h2>
+                    <button class="modal-close" id="closeModal">&times;</button>
+                </div>
+                <form id="recordForm">
+                    <div id="formFields"></div>
+                    <div class="modal-actions">
+                        <button type="button" class="btn-secondary" id="cancelBtn">Cancel</button>
+                        <button type="submit" class="btn-primary">Save</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Column Settings Modal -->
+        <div class="modal" id="columnModal" role="dialog" aria-modal="true" aria-labelledby="columnModalTitle">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Column Settings</h2>
+                    <button class="modal-close" id="closeColumnModal">&times;</button>
+                </div>
+                <div class="column-settings">
+                    <p class="column-hint">Drag to reorder columns</p>
+                    <ul id="columnList" class="column-list"></ul>
+                    <div class="modal-actions">
+                        <button type="button" class="btn-secondary" id="resetColumnsBtn">Reset to Default</button>
+                        <button type="button" class="btn-primary" id="saveColumnsBtn">Save Order</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body>
+</html>
