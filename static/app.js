@@ -96,7 +96,8 @@ const tableConfigs = {
     invoices: {
         name: 'Invoices',
         columns: ['id', 'InvoiceCode', 'No', 'SupplierName', 'DonorName',
-                  'ProjectCode', 'Date', 'Amount', 'Currency', 'Status','Fatura', 'Notes'],
+                  'ProjectCode', 'Date', 'Amount', 'Currency', 'Status',
+                  'RequiresTranslation', 'AssignedTo', 'Notes'],
         displayNames: {
             'id': 'ID',
             'InvoiceCode': 'Invoice Code',
@@ -108,7 +109,8 @@ const tableConfigs = {
             'Amount': 'Amount',
             'Currency': 'Currency',
             'Status': 'Status',
-            'Fatura': 'Fatura',
+            'RequiresTranslation': 'Translation?',
+            'AssignedTo': 'Assigned To',
             'Notes': 'Notes'
         },
         formFields: [
@@ -121,16 +123,18 @@ const tableConfigs = {
             { name: 'Amount', label: 'Amount', type: 'number', required: false, step: '0.01' },
             { name: 'Currency', label: 'Currency', type: 'select', required: false, options: ['TRY', 'USD', 'EUR'] },
             { name: 'Status', label: 'Status', type: 'select', required: false,
-              options: ['Missing', 'Requested Ahmet', 'Requested Heba', 'Received','Done'] },
-            { name: 'Fatura', label: 'Fatura', type: 'select', required: false,
-              options: ['Missing','To Translate','To Sign', 'Sent Ahmet', 'Sent Heba', 'Received'] },
+              options: ['Missing', 'Requested', 'Received', 'Translated', 'Sent', 'Done'] },
+            { name: 'RequiresTranslation', label: 'Requires Translation', type: 'select', required: true,
+              options: ['true', 'false'] },
+            { name: 'AssignedTo', label: 'Assigned To', type: 'text', required: false },
             { name: 'Notes', label: 'Notes', type: 'textarea', required: false }
         ]
     },
     receipts: {
         name: 'Receipts',
         columns: ['id', 'ReceiptCode', 'No', 'ProjectCode', 'PaymentCode',
-              'PaymentDate', 'ReceiptDate', 'Amount', 'Currency', 'Status', 'Makbuz', 'Notes'],
+              'PaymentDate', 'ReceiptDate', 'Amount', 'Currency', 'Status',
+              'RequiresTranslation', 'AssignedTo', 'Notes'],
         displayNames: {
             'id': 'ID',
             'ReceiptCode': 'Receipt Code',
@@ -142,7 +146,8 @@ const tableConfigs = {
             'Amount': 'Amount',
             'Currency': 'Currency',
             'Status': 'Status',
-            'Makbuz': 'Makbuz',
+            'RequiresTranslation': 'Translation?',
+            'AssignedTo': 'Assigned To',
             'Notes': 'Notes'
         },
         formFields: [
@@ -155,27 +160,26 @@ const tableConfigs = {
             { name: 'Amount', label: 'Amount', type: 'number', required: false, step: '0.01' },
             { name: 'Currency', label: 'Currency', type: 'select', required: true, options: ['TRY', 'USD', 'EUR'] },
             { name: 'Status', label: 'Status', type: 'select', required: false,
-              options: ['Missing', 'Requested Ahmet', 'Requested Heba', 'Received','Done'] },
-            { name: 'Makbuz', label: 'Makbuz', type: 'select', required: false,
-              options: ['Missing','To Translate','To Sign', 'Sent Ahmet', 'Sent Heba', 'Received'] },
+              options: ['Missing', 'Requested', 'Received', 'Translated', 'Sent', 'Done'] },
+            { name: 'RequiresTranslation', label: 'Requires Translation', type: 'select', required: true,
+              options: ['true', 'false'] },
+            { name: 'AssignedTo', label: 'Assigned To', type: 'text', required: false },
             { name: 'Notes', label: 'Notes', type: 'textarea', required: false }
         ]
     },
     suppliers: {
         name: 'Suppliers',
-        columns: ['id', 'CompanyName', 'Country', 'ContactPerson', 'TaxId'],
+        columns: ['id', 'CompanyName', 'Country', 'ContactPerson'],
         displayNames: {
             'id': 'ID',
             'CompanyName': 'Company Name',
             'Country': 'Country',
-            'ContactPerson': 'Contact Person',
-            'TaxId': 'Tax ID'
+            'ContactPerson': 'Contact Person'
         },
         formFields: [
             { name: 'CompanyName', label: 'Company Name', type: 'text', required: true },
             { name: 'Country', label: 'Country', type: 'text', required: true },
-            { name: 'ContactPerson', label: 'Contact Person', type: 'text', required: false },
-            { name: 'TaxId', label: 'Tax ID', type: 'text', required: false }
+            { name: 'ContactPerson', label: 'Contact Person', type: 'text', required: false }
         ]
     },
     donors: {
@@ -265,13 +269,16 @@ function setupEventListeners() {
 
 async function loadLookupData() {
     try {
-        const [suppliers, donors, projects, decisions, payments] = await Promise.all([
-            fetch('/api/suppliers').then(r => r.json()),
-            fetch('/api/donors').then(r => r.json()),
-            fetch('/api/projects').then(r => r.json()),
-            fetch('/api/decisions').then(r => r.json()),
-            fetch('/api/payments').then(r => r.json())
-        ]);
+        // Load sequentially, NOT with Promise.all. The Flask dev server shares one
+        // global Supabase client that isn't safe for concurrent use — firing all five
+        // at once collides on its socket and throws EAGAIN ([Errno 11]). One request
+        // in flight at a time avoids the collision. (Real backend concurrency-safety —
+        // needed once n8n hits the API alongside the UI — is a Phase 5 task.)
+        const suppliers = await fetch('/api/suppliers').then(r => r.json());
+        const donors    = await fetch('/api/donors').then(r => r.json());
+        const projects  = await fetch('/api/projects').then(r => r.json());
+        const decisions = await fetch('/api/decisions').then(r => r.json());
+        const payments  = await fetch('/api/payments').then(r => r.json());
         lookupData = { suppliers, donors, projects, decisions, payments };
     } catch (error) {
         console.error('Error loading lookup data:', error);
@@ -492,7 +499,9 @@ function openModal(id = null) {
             config.formFields.forEach(field => {
                 const input = document.getElementById(field.name);
                 if (input && record[field.name] !== undefined) {
-                    input.value = record[field.name] || '';
+                    // Use ?? not || : || also blanks falsy-but-real values (false, 0),
+                    // silently turning a stored `false`/`0` into an empty field on edit.
+                    input.value = record[field.name] ?? '';
                 }
             });
         }

@@ -22,6 +22,24 @@ supabase: Client = create_client(URL, KEY)
 
 
 # ============================================================
+#  Helpers
+# ============================================================
+
+def _to_bool(value, default=True):
+    """Coerce a form value to a real boolean for RequiresTranslation.
+
+    A boolean column's DB DEFAULT only fires when the key is OMITTED from the
+    INSERT — sending an explicit None writes NULL and overrides the default.
+    The frontend serialises every field as a string (or null), so we normalise
+    here and bias an absent/blank value to `default` (True). Risk asymmetry:
+    assume a document needs translation unless someone explicitly opts out.
+    """
+    if value is None or value == "":
+        return default
+    return str(value).strip().lower() in ("true", "t", "yes", "1")
+
+
+# ============================================================
 #  API Routes - GET
 # ============================================================
  
@@ -180,7 +198,6 @@ def create_supplier():
             "CompanyName":   data["CompanyName"],
             "Country":       data["Country"],
             "ContactPerson": data.get("ContactPerson"),
-            "TaxId":         data.get("TaxId"),
         }).execute()
         return jsonify({"success": True, "id": res.data[0]["id"]})
     except Exception as e:
@@ -246,8 +263,7 @@ def create_payment():
         }).execute()
 
         payment = res.data[0]
-        payment_id = payment["id"]           # numeric id — for the FK
-        payment_code = payment["PaymentCode"] # text code — for display if needed
+        payment_id = payment["id"]           # numeric id — Receipts.PaymentCode is a BIGINT FK to this
 
         # 2. Resolve ProjectCode from ProjectId
         project_code = None
@@ -255,14 +271,16 @@ def create_payment():
             proj = supabase.table("Projects").select("ProjectCode").eq("id", data["ProjectId"]).single().execute()
             project_code = proj.data.get("ProjectCode") if proj.data else None
 
-        # 3. Auto-create receipt
+        # 3. Auto-create receipt — inherits Project / Payment / Date / Amount / Currency from the payment.
+        #    PaymentCode MUST be the numeric payment_id (BIGINT FK -> Payments.id), never the text code.
         supabase.table("Receipts").insert({
-            "ProjectCode": project_code,
-            "PaymentCode": payment_code,        # ← must stay as numeric id (BIGINT FK)
-            "PaymentDate": data.get("PaymentDate"),
-            "Amount":      data.get("Amount"),
-            "Currency":    data.get("Currency"),
-            "Status":      "Missing",  # default status for auto-created receipts
+            "ProjectCode":         project_code,
+            "PaymentCode":         payment_id,          # BIGINT FK -> Payments.id
+            "PaymentDate":         data.get("PaymentDate"),
+            "Amount":              data.get("Amount"),
+            "Currency":            data.get("Currency"),
+            "Status":              "Missing",           # under-claim: never auto-mark a receipt collected
+            "RequiresTranslation": True,                # matches DB default; opting out is the rare case
         }).execute()
 
         return jsonify({"success": True, "id": payment_id})
@@ -285,6 +303,8 @@ def create_receipt():
             "Amount":      data.get("Amount"),
             "Currency":    data.get("Currency"),
             "Status":      data.get("Status"),
+            "RequiresTranslation": _to_bool(data.get("RequiresTranslation")),
+            "AssignedTo":  data.get("AssignedTo"),
             "Notes":       data.get("Notes"),
         }).execute()
         return jsonify({"success": True, "id": res.data[0]["id"]})
@@ -306,6 +326,8 @@ def create_invoice():
             "Amount":      data.get("Amount"),
             "Currency":    data.get("Currency"),
             "Status":      data.get("Status"),
+            "RequiresTranslation": _to_bool(data.get("RequiresTranslation")),
+            "AssignedTo":  data.get("AssignedTo"),
             "Notes":       data.get("Notes"),
         }).execute()
         return jsonify({"success": True, "id": res.data[0]["id"]})
@@ -340,7 +362,6 @@ def update_supplier(id):
             "CompanyName":   data["CompanyName"],
             "Country":       data["Country"],
             "ContactPerson": data.get("ContactPerson"),
-            "TaxId":         data.get("TaxId"),
         }).eq("id", id).execute()
         return jsonify({"success": True})
     except Exception as e:
@@ -402,7 +423,6 @@ def update_payment(id):
             "DeclarationDate": data.get("DeclarationDate"),
             "PaymentDate":     data.get("PaymentDate"),
             "ClosingDate":     data.get("ClosingDate"),
-            "ReceiptCode":     data.get("ReceiptCode"),
         }).eq("id", id).execute()
         return jsonify({"success": True})
     except Exception as e:
@@ -423,6 +443,8 @@ def update_receipt(id):
             "Amount":      data.get("Amount"),
             "Currency":    data.get("Currency"),
             "Status":      data.get("Status"),
+            "RequiresTranslation": _to_bool(data.get("RequiresTranslation")),
+            "AssignedTo":  data.get("AssignedTo"),
             "Notes":       data.get("Notes"),
         }).eq("id", id).execute()
         return jsonify({"success": True})
@@ -444,6 +466,8 @@ def update_invoice(id):
             "Amount":      data.get("Amount"),
             "Currency":    data.get("Currency"),
             "Status":      data.get("Status"),
+            "RequiresTranslation": _to_bool(data.get("RequiresTranslation")),
+            "AssignedTo":  data.get("AssignedTo"),
             "Notes":       data.get("Notes"),
         }).eq("id", id).execute()
         return jsonify({"success": True})
