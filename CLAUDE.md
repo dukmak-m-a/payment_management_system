@@ -115,36 +115,53 @@ reconstruct it from memory of the frontend code.
 - *Requirements table slot values* (four-state, this is what the compliance
   report reads): `Missing / Unnecessary / Requested / Collected`
 
-**Requirements table design (locked):**
+**Requirements design — BUILT 2026-07-19 in `sql/phase4_requirements.sql` +
+backend seeding (`create_payment`/`create_project`). NOT yet run in Supabase; no
+edit UI yet. Cascade mechanism DECIDED: compute-in-view — no DB trigger, no
+app-write cascade, no reconciler. A slot that is never stored cannot drift.**
 
-- Long shape (one row per Payment × DocumentType) is the source of truth.
-  A SQL view pivots it wide for display — never make the wide shape the
-  thing that gets written to.
-- Four slots are **computed, no manual override, ever**: Invoice, Invoice
-  Translation, Receipt, Receipt Translation. They derive from the parent
-  Invoice/Receipt row's `Status` + `RequiresTranslation` flag. Manual editing
-  of these four is a reintroduction of the exact silent-drift risk that was
-  designed out — don't add an override path for these without a real,
-  named failure case driving it.
-- Locked formulas:
+- **Human-edited slots = long shape, source of truth**, split by grain into two
+  tables: `PaymentRequirements` (3 payment-grain: Dekont, TransferOrder,
+  OdemeEmri) and `ProjectRequirements` (5 project-grain: Contract, Karar,
+  TeslimBelgesi, AlindiBelgesi, Fotograflar). Four-state, `DEFAULT 'Missing'`. Seeded as
+  Missing on create; an absent row also COALESCEs to Missing in the wide view.
+  (Resolves the old contradiction: human slots are rows in these tables, not
+  columns on one wide row.)
+- **Four computed slots — no manual override, ever — derived live by SQL views,
+  never stored:** `receipt_compliance` (**payment-grain**: Receipt +
+  Receipt-Translation off the auto-created Receipts row) and `invoice_compliance`
+  (**project-grain**: Invoice + Invoice-Translation aggregated over a project's
+  invoices).
+- **Receipt / Receipt-Translation (unchanged):**
   ```
-  Requirements["Invoice"] =
-      Collected if Invoice.Status >= Received
-      else Invoice.Status   # Missing/Requested passthrough
-
-  Requirements["Invoice Translation"] =
-      Unnecessary if Invoice.RequiresTranslation == false
-      elif Collected if Invoice.Status > Sent      # i.e. == Done
-      elif Requested if Invoice.Status > Received  # Translated or Sent
-      else Missing
+  Receipt             = Collected if Status >= Received; Requested if Requested; else Missing
+  Receipt Translation = Unnecessary if not RequiresTranslation
+                        elif Collected if Status == Done
+                        elif Requested if Status in (Translated, Sent)
+                        else Missing
   ```
-  Same pattern for Receipt / Receipt Translation off the Receipt row.
-- All other document-type slots (~8-10: bank receipt, photos, decision docs,
-  etc.) have no dedicated table — they're direct human-edited tri/four-state
-  fields on the Requirements row, no computed source.
-- Trigger mechanism for the cascade (DB trigger vs. app-layer write vs.
-  scheduled reconciliation) is **still undecided** — don't pick one silently
-  when this gets built; surface the tradeoff first.
+- **Invoice formula SUPERSEDED** (old single-invoice Status-passthrough was wrong
+  — a project can have several invoices). Now an **amount-coverage** rule:
+  ```
+  spend   = Σ Payments.Amount for the project, EXCLUDING Returned/Return-Closed
+  in_hand = Σ Invoices.Amount for the project WHERE Status >= Received
+  Invoice = Missing    if spend == 0            # no false Collected at zero spend
+            Collected  if in_hand >= spend      # every spent unit is documented
+            Requested  if any invoice past Missing
+            else Missing
+  Invoice Translation = Unnecessary if no invoice needs translation
+                        Collected  if Invoice == Collected AND every translation-
+                                      requiring invoice is Done
+                        Requested  if any translation progress
+                        else Missing
+  ```
+  **Ungated/live:** recomputed every read, so a false Collected cannot persist —
+  new spend re-opens it. Denominator derives from payments → **no `ActualBudget`
+  column**.
+- Wide `compliance_report` view mirrors the legacy 19-column sheet (one row per
+  payment; project-grain slots repeat across the project's payments) and adds a
+  computed `Closed` = AND of every slot being Collected/Unnecessary (distinct
+  from the manual `Projects.Status = 'Closed'`).
 
 ## Migration status — APPLIED & VERIFIED 2026-07-19 (was: active migration)
 
@@ -172,13 +189,18 @@ in the running code. Kept as the record of what changed.
 
 ## Current focus / next (as of 2026-07-19)
 
-**Phase 4 — build the Requirements table + status cascade.** First open decision, do
-NOT pick silently: the cascade **trigger mechanism** (DB trigger vs. app-layer write vs.
-scheduled reconciliation) — surface the tradeoff for Abdullah. Design input from his
-domain authority: a receipt's `Amount`/`Currency` can legitimately differ from its
-payment's (bank cut / commission), so payment→receipt propagation must NEVER overwrite
-receipt money fields — the `Receipt.Amount` vs joined `PaymentAmount` gap is itself a
-compliance signal.
+**Phase 4 — Requirements table + status cascade: DESIGN DONE, PARTIALLY BUILT.** The
+cascade trigger question is resolved — **compute-in-view** (see the Requirements design
+section above and `sql/phase4_requirements.sql`). Built: the two Requirements tables, the
+three views, Missing-seeding in `create_payment`/`create_project`, an **auto-Invoice on
+project create** (mirrors the auto-receipt), and the **backend edit path**: `GET
+/api/compliance_report` + `PUT /api/requirements` (upserts one human slot; allowlisted so
+the 4 computed slots can never be hand-set; lazily backfills pre-existing rows). **Not yet
+done:** run the SQL in Supabase; build the frontend compliance tab (read the view, edit
+human slots). Standing domain rule: a
+receipt's `Amount`/`Currency` can legitimately differ from its payment's (bank cut /
+commission) — never overwrite receipt money fields; the `Receipt.Amount` vs joined
+`PaymentAmount` gap is itself a compliance signal.
 
 Remaining roadmap (full walkthrough in
 `~/.claude/plans/as-my-mentor-first-sorted-sphinx.md`): **Phase 5** — n8n ↔ DB
@@ -186,6 +208,19 @@ re-integration **+ make the backend Supabase access concurrency-safe** (the Phas
 frontend serialization is only a UI-side mitigation of the shared-client EAGAIN issue).
 **Phase 6** — portfolio polish (`requirements.txt` slimming, branding reconciliation,
 `innerHTML` XSS note).
+
+## Security phase — auth APPLIED IN CODE 2026-07-19 (parallel session)
+
+Login/auth built in a separate session alongside Phase 4 (details/DDL in `agent.md`
+→ Authentication; decision record in `project-context.md` §4b): hand-rolled Flask
+session auth against a new `Accounts` table, default-deny `before_request` guard
+(risk asymmetry: forgetting an allowlist entry fails closed, not open), werkzeug
+hashing via `generate_hash.py`, login throttle, CORS removed, logout button,
+`apiFetch()` 401 wrapper. **Not verified end-to-end until Abdullah: (1) creates
+the Accounts table in Supabase, (2) adds `FLASK_SECRET_KEY` to `.env` (app now
+refuses to start without it), (3) seeds an account row.** Deferred consciously:
+Flask-Login, roles/RBAC, admin user UI, CSRF tokens, Flask-Limiter, HTTPS/Secure
+cookie — see the VPS-day checklist in `agent.md`.
 
 ## Audit status
 

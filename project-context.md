@@ -82,7 +82,9 @@ code for full field lists):
 - **Donors**: `DonorCode`, `DonorName`, `Country`, `ContactPerson`.
 - **Decisions**: `DecisionNumber`, `DecisionDate`, `Description`, `Attendants`.
 - **Projects**: `ProjectCode`, `Subject`, `SupplierId`, `Budget`, `Currency`,
-  `StartDate`, `EndDate`, `Status` (Active/Completed/On-Hold/Cancelled),
+  `StartDate`, `EndDate`, `Status` (Active/Closed/On-Hold/Cancelled — `Completed`
+  dropped 2026-07-19 as over-complex for this stage; migrate any live `Completed`
+  rows to `Closed`),
   `DriveFolderLink`.
 - **Payments**: `PaymentCode`, `SupplierId`, `ProjectId`, `DonorId`,
   `DecisionId`, `Destination` (Domestic/International), `Bank`, `Amount`,
@@ -122,6 +124,31 @@ code for full field lists):
   (boolean, default `true`) and `AssignedTo` (text) — the latter closes Open
   Issue #1. `Fatura`/`Makbuz` columns dropped from the DB.
 
+## 4b. Authentication — decisions made 2026-07-19 (applied in code, verification pending)
+
+Security phase started (parallel to Phase 4). Decisions and their why:
+
+- **Hand-rolled Flask session auth over Flask-Login / Supabase Auth.** Chosen for
+  learning value (Abdullah owns every moving part) and zero new dependencies.
+  Flask-Login is the named future upgrade path; Supabase Auth was consciously
+  rejected — it would replace the Accounts table and keep auth mechanics a black box.
+- **Accounts created manually** (hash from `generate_hash.py` pasted into the
+  Supabase dashboard). No self-registration — on an internal compliance tool a
+  signup page is an anti-feature. Admin user-management UI + roles (admin/viewer)
+  deferred until there's a real second-user need.
+- **Default-deny guard, not per-route decorators** — the risk-asymmetry principle
+  applied to auth: a forgotten decorator fails *open* (silently unprotected route),
+  a forgotten allowlist entry fails *closed* (visible 401).
+- **Deployment: local now, VPS soon** → VPS-safe defaults built now (HttpOnly,
+  SameSite=Lax, session fixation guard, throttle); the internet-facing items
+  (HTTPS, Secure cookie, gunicorn, Flask-Limiter, RLS) are a written checklist in
+  `agent.md`, not vague intentions.
+- **Verification is pending on Abdullah's side**: create the `Accounts` table, add
+  `FLASK_SECRET_KEY` to `.env`, seed one account, run the 8-step check in the plan
+  (`~/.claude/plans/i-am-working-on-iterative-dongarra.md`). Until then this is
+  "applied in code," NOT "verified end-to-end" — per this project's own doc-drift
+  history, don't upgrade the claim without running it.
+
 ## 5. Open Issues (unresolved — do not build past these silently)
 
 1. **Internal assignee gap — RESOLVED 2026-07-19.** Merging Status removed the
@@ -130,12 +157,24 @@ code for full field lists):
    who is external). Resolved by adding an `AssignedTo` text field to
    Invoices/Receipts: single current holder, no history (overwrite loses the
    prior name — accepted tradeoff).
-2. **Requirements table does not exist yet.** No schema, no cascade/trigger
-   logic. This is the next concrete build task. Cascade behavior agreed in
-   principle: an Invoice/Receipt Status change updates the linked Requirements
-   row/column for that document type — but the actual implementation
-   (DB trigger? application logic on write? scheduled reconciliation?) is
-   undecided.
+2. **Requirements table — DESIGN DECIDED 2026-07-19, NOT yet built in code**
+   (no view or table exists yet — treat as decided-in-conversation until the SQL
+   lands). Cascade mechanism resolved: **compute the four derived slots in SQL
+   views on read — no stored copy, no DB trigger, no app-write cascade, no
+   reconciler.** A slot that is never stored cannot drift. Two views:
+   `receipt_compliance` (**payment-grain**; Receipt + Receipt-Translation from
+   `Receipts.Status`/`RequiresTranslation`) and `invoice_compliance`
+   (**project-grain**). The invoice slot is an **amount-coverage** rule, not a
+   single-Status passthrough (this supersedes the old locked single-invoice
+   formula in `CLAUDE.md`, which assumed one invoice): **Collected when
+   Σ(in-hand invoices with Status ≥ Received) ≥ Σ(project's non-returned
+   payments)** — every dollar actually spent is documented. Denominator is
+   derived from payments, so **no `ActualBudget` column** is added.
+   **Ungated/live:** recomputed on every read, so a false "Collected" cannot
+   persist — new spend re-opens it. Still open: the project-grain
+   invoice-*translation* aggregate rule; the human-edited slots' table shape
+   (wide vs long — `CLAUDE.md` is internally contradictory on this); and the
+   authoritative doc-type list.
 2b. **`to_verify` status integration**: confirmed conceptually (Section 3) but
    not yet reflected in the not-yet-built Requirements table's status enum.
 3. **Status pipeline isn't strictly linear across document types** — e.g. not
