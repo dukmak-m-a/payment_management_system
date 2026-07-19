@@ -24,7 +24,10 @@ has been caught once silently omitting two real DB columns (`Fatura`,
 "decided" claim in any of these docs as a hypothesis until checked against
 the actual running code or DB schema. If you find a contradiction, say so
 explicitly — don't silently trust the doc, and don't silently trust the code
-either.
+either. (Third confirmed instance, 2026-07-19: `project-context.md` claimed the
+Invoice/Receipt Status-merge was "fix applied" while the running code still had
+staff-name statuses and the `Fatura`/`Makbuz` fields — genuinely applied only
+on 2026-07-19.)
 
 ---
 
@@ -143,65 +146,51 @@ reconstruct it from memory of the frontend code.
   scheduled reconciliation) is **still undecided** — don't pick one silently
   when this gets built; surface the tradeoff first.
 
-## Active migration (in progress — do in this order: DB → backend → frontend)
+## Migration status — APPLIED & VERIFIED 2026-07-19 (was: active migration)
 
-This reflects real decisions made, not yet applied to the running code as of
-this session. Test data only in Invoices/Receipts right now — no real-data
-migration logic needed, just redefine.
+The DB → backend → frontend migration below is **applied and verified end-to-end**
+in the running code. Kept as the record of what changed.
 
-1. **DB (Supabase), Invoices + Receipts tables:**
-   - Consolidate `Status` to the six-stage enum above (it's a plain `text`
-     column, not a Postgres enum type — no `ALTER TYPE` needed, just change
-     what values the app treats as valid).
-   - Retire `Fatura` (Invoices) / `Makbuz` (Receipts) — confirmed via live
-     schema export that both still exist as real columns today. Their
-     meaning folds into the merged `Status` field's Translated/Sent stages.
-     **Decided: no separate backend patch first** — the backend already
-     never writes to either column (`agent.md` Known Gotcha #7), so go
-     straight to retiring them rather than spending time making them work
-     correctly first.
-   - **Also drop `Payments.ReceiptCode`** — decided not meaningful for that
-     table anymore. Drop the column and remove the
-     `"ReceiptCode": data.get("ReceiptCode")` key from `update_payment()`'s
-     update dict entirely. Do not confuse this with `Receipts.ReceiptCode`
-     (different table, actively used, stays as-is — see `agent.md` Known
-     Gotcha #8 for the disambiguation).
-   - Add `RequiresTranslation` boolean, **default `true`** (translation is
-     the ~99% case; the rare exception should have to opt out, not opt in —
-     this is the risk-asymmetry principle applied to a schema default).
-   - Add `AssignedTo` field — single current holder, v1 has no history.
-     Overwriting it loses the previous holder's name permanently; that's an
-     accepted tradeoff, not a bug.
-2. **Backend (`app.py`):** update all four touched endpoints
-   (`create_invoice`, `update_invoice`, `create_receipt`, `update_receipt`)
-   for the new fields. Check the auto-created Receipt row inside
-   `create_payment()` too — `Status` there was fixed from the invalid
-   `"Pending"` to `"Missing"`; confirm `RequiresTranslation` gets a sane
-   default there as well.
-3. **Frontend (`app.js`):** update `tableConfigs.invoices` /
-   `tableConfigs.receipts` — six-stage `Status` options, remove `Fatura`/
-   `Makbuz` fields entirely, add `RequiresTranslation` and `AssignedTo`
-   fields, update `columns`/`displayNames` to match. Also add the missing
-   CSS badge classes for the six new `Status` values (`agent.md` Known
-   Gotcha #9) — the new enum won't render correctly without them.
+1. **DB (Supabase):** six-stage `Status` (plain `text`, no enum type) is what the
+   app now treats as valid; `Fatura` (Invoices), `Makbuz` (Receipts),
+   `Payments.ReceiptCode`, and `Suppliers.TaxId` **dropped**; `RequiresTranslation`
+   (boolean, default `true`) and `AssignedTo` (text) **added** to Invoices + Receipts.
+2. **Backend (`app.py`):** all four Invoice/Receipt endpoints write the two new
+   fields, via a `_to_bool()` helper that biases an absent/blank `RequiresTranslation`
+   to `true` (a boolean column's DEFAULT only fires when the key is *omitted*, so an
+   explicit `None` would defeat it — risk asymmetry). `update_payment()` no longer
+   writes `ReceiptCode`; both supplier endpoints no longer write `TaxId`. The
+   auto-created Receipt in `create_payment()` sets `RequiresTranslation=True` and —
+   **bug fixed** — uses the numeric `payment_id` for the `PaymentCode` BIGINT FK (was
+   writing the text code; see `agent.md` Gotcha #10).
+3. **Frontend (`app.js` / `style.css`):** six-stage `Status` options; `Fatura`/`Makbuz`
+   removed; `RequiresTranslation` (`true`/`false` select) + `AssignedTo` added;
+   `columns`/`displayNames` updated; CSS badges added for the six stages + `On-Hold` +
+   `Return-Closed`. Two fixes surfaced during the work: `openModal` populate
+   (`|| ''` → `?? ''`, which had blanked a stored `false`/`0` on edit), and
+   `loadLookupData` serialized to stop concurrent-burst EAGAIN 500s (`agent.md` #11).
 
-**Separate, smaller cleanup — not part of this migration, unrelated tables:**
-Projects' `On-Hold` and Payments' `Return-Closed` also have no matching CSS
-badge class (`agent.md` Known Gotcha #9). Fix whenever convenient; not
-blocking anything above.
+## Current focus / next (as of 2026-07-19)
 
-## Not yet audited
+**Phase 4 — build the Requirements table + status cascade.** First open decision, do
+NOT pick silently: the cascade **trigger mechanism** (DB trigger vs. app-layer write vs.
+scheduled reconciliation) — surface the tradeoff for Abdullah. Design input from his
+domain authority: a receipt's `Amount`/`Currency` can legitimately differ from its
+payment's (bank cut / commission), so payment→receipt propagation must NEVER overwrite
+receipt money fields — the `Receipt.Amount` vs joined `PaymentAmount` gap is itself a
+compliance signal.
 
-Suppliers, Donors, Decisions, Projects tables haven't had the full field
-audit run against them yet. Method, three-way, both directions:
+Remaining roadmap (full walkthrough in
+`~/.claude/plans/as-my-mentor-first-sorted-sphinx.md`): **Phase 5** — n8n ↔ DB
+re-integration **+ make the backend Supabase access concurrency-safe** (the Phase-3
+frontend serialization is only a UI-side mitigation of the shared-client EAGAIN issue).
+**Phase 6** — portfolio polish (`requirements.txt` slimming, branding reconciliation,
+`innerHTML` XSS note).
 
-1. List every field in `columns` and every field in `formFields` for the
-   table, side by side. Flag anything present in one but not the other
-   (including under a different name).
-2. For each field in `formFields`, confirm it's actually present in the
-   corresponding backend create/update dict in `app.py` — not just assumed.
-3. For each key the backend create/update dict writes, confirm the frontend
-   still actually sends it — a key can survive in the backend long after
-   its form field was removed, silently overwriting real data with `None`
-   on every save.
-4. Confirm by creating a real test row through the running app end to end.
+## Audit status
+
+Field-level three-way, both-directions audit (columns ↔ formFields ↔ backend dict) is
+**done for all seven tables** as of 2026-07-19. Suppliers/Donors/Decisions/Projects all
+**pass** — no field mismatch remains. Suppliers additionally verified end-to-end via a
+live create after the `TaxId` drop; a belt-and-suspenders end-to-end test row through the
+running app is still worth doing for Donors/Decisions/Projects, but nothing is known broken.

@@ -67,11 +67,12 @@ project/
 ## Database Schema (Supabase / PostgreSQL)
 
 > Verified directly against a live Supabase schema export (not reconstructed
-> from application code). `Fatura` (Invoices) and `Makbuz` (Receipts) are
-> real, existing columns — earlier versions of this doc omitted them, which
-> was wrong. Both are slated for retirement as part of the Status-merge
-> migration tracked in `CLAUDE.md` — until that lands, see Known Gotcha #7
-> for why they currently hold no real data regardless of what's entered.
+> from application code). **Updated 2026-07-19 after the Status-merge migration
+> landed:** `Fatura` (Invoices), `Makbuz` (Receipts), `Payments.ReceiptCode`,
+> and `Suppliers.TaxId` have all been **dropped**; `RequiresTranslation`
+> (boolean, default `true`) and `AssignedTo` (text) were **added** to Invoices
+> and Receipts. The DDL below reflects the post-migration schema. (Gotchas #7
+> and #8 are now resolved — kept below for history.)
 
 ```sql
 -- WARNING: schema is for reference only, not meant to be run as-is.
@@ -80,7 +81,6 @@ CREATE TABLE public.Suppliers (
   CompanyName text NOT NULL,
   Country text,
   ContactPerson text,
-  TaxId text,
   CONSTRAINT Suppliers_pkey PRIMARY KEY (id)
 );
 
@@ -128,7 +128,6 @@ CREATE TABLE public.Payments (
   ProjectId bigint NOT NULL,
   SupplierId bigint NOT NULL,
   Destination text,
-  ReceiptCode text,          -- NOTE: current usage unclear, see Known Gotcha #8
   DonorId bigint,
   DecisionId bigint,
   Bank text,
@@ -147,14 +146,15 @@ CREATE TABLE public.Receipts (
   ProjectCode text,
   PaymentCode bigint,        -- FK is numeric Payments.id, not the text PaymentCode
   PaymentDate date,
-  ReceiptCode text,          -- stores the text PaymentCode for display
+  ReceiptCode text,          -- the receipt document's OWN code (not the payment code)
   No text,
   ReceiptDate date,
-  Amount numeric,
+  Amount numeric,            -- the RECEIPT's amount; may differ from the payment (bank cut/commission)
   Currency text,
-  Status text,
+  Status text,               -- six-stage: Missing/Requested/Received/Translated/Sent/Done
+  RequiresTranslation boolean DEFAULT true,
+  AssignedTo text,
   Notes text,
-  Makbuz text,                -- see Known Gotcha #7
   CONSTRAINT Receipts_pkey PRIMARY KEY (id),
   CONSTRAINT Receipts_ProjectCode_fkey FOREIGN KEY (ProjectCode) REFERENCES public.Projects(ProjectCode),
   CONSTRAINT Receipts_PaymentCode_fkey FOREIGN KEY (PaymentCode) REFERENCES public.Payments(id)
@@ -170,9 +170,10 @@ CREATE TABLE public.Invoices (
   Date date,
   Amount numeric,
   Currency text,
-  Status text,
+  Status text,                -- six-stage: Missing/Requested/Received/Translated/Sent/Done
+  RequiresTranslation boolean DEFAULT true,
+  AssignedTo text,
   Notes text,
-  Fatura text,                -- see Known Gotcha #7
   CONSTRAINT Invoices_pkey PRIMARY KEY (id),
   CONSTRAINT Invoices_SupplierId_fkey FOREIGN KEY (SupplierId) REFERENCES public.Suppliers(id),
   CONSTRAINT Invoices_DonorId_fkey FOREIGN KEY (DonorId) REFERENCES public.Donors(id),
@@ -229,22 +230,27 @@ else:
 Color coding in frontend: green ≥ 30 days, yellow < 30, red < 10.
 
 ### Auto-create Receipt on Payment
-When a new payment is POSTed, a receipt is automatically created:
+When a new payment is POSTed, a receipt is automatically created, inheriting
+Project / Payment / Date / Amount / Currency from the payment:
 ```python
 # After inserting payment:
 payment_id = payment["id"]           # numeric — used as Receipts.PaymentCode FK
-payment_code = payment["PaymentCode"] # text — stored in Receipts.ReceiptCode
 
 supabase.table("Receipts").insert({
-    "ProjectCode": project_code,      # resolved from ProjectId
-    "PaymentCode": payment_id,        # BIGINT FK
-    "PaymentDate": data.get("PaymentDate"),
-    "Amount":      data.get("Amount"),
-    "Currency":    data.get("Currency"),
-    "Status":      "Missing",         # changed from earlier "Pending", which
-                                       # wasn't a valid Status option anywhere
+    "ProjectCode":         project_code,   # resolved from ProjectId
+    "PaymentCode":         payment_id,     # BIGINT FK -> Payments.id
+    "PaymentDate":         data.get("PaymentDate"),
+    "Amount":              data.get("Amount"),
+    "Currency":            data.get("Currency"),
+    "Status":              "Missing",      # never auto-mark a receipt collected
+    "RequiresTranslation": True,           # matches DB default (added 2026-07-19)
 }).execute()
 ```
+**Bug fixed 2026-07-19:** this insert previously wrote `payment_code` (the TEXT
+`PaymentCode`) into the BIGINT FK column — it threw a type error the moment a
+payment carried any non-numeric PaymentCode, leaving the payment saved but the
+auto-receipt un-created. It now uses the numeric `payment_id`. The receipt does
+NOT store the text code anywhere; `get_receipts` resolves it live via the FK join.
 
 ### DriveFolderLink (Projects)
 Stored as plain text URL. Rendered as a clickable folder icon in the table.
@@ -320,14 +326,15 @@ client, then this note can be deleted for that deployment's copy.
 
 6. **localStorage column orders** — if wrong columns appear in the UI, clear `columnOrders` from localStorage and hard refresh.
 
-7. **`Fatura` (Invoices) / `Makbuz` (Receipts) are real DB columns the backend never writes.** The frontend form still offers a dropdown for both, but `create_invoice`, `update_invoice`, `create_receipt`, and `update_receipt` all build their Supabase payload as an explicit field list that omits them. Any value selected is silently discarded before it reaches the DB. **Decided: no backend patch** — going straight to retirement as part of the Status-merge migration (see `CLAUDE.md`). Don't spend time making these two fields work correctly; they're being removed, not fixed.
+7. **RESOLVED 2026-07-19 — `Fatura` (Invoices) / `Makbuz` (Receipts) dropped.** These were real DB columns the backend never wrote (the frontend offered a dropdown, but the four Invoice/Receipt endpoints built an explicit field list that omitted them, silently discarding any value). Both columns are now dropped from the DB and both form fields removed from `tableConfigs`. Kept for history.
 
-8. **`Payments.ReceiptCode` — decided: dropping this column.** `formFields` for Payments no longer includes `ReceiptCode`, but `update_payment()` still writes `"ReceiptCode": data.get("ReceiptCode")` — which resolves to `None` every time, silently nulling it on every save. Confirmed not meaningful for Payments; plan is to drop the column and remove the key from `update_payment()`'s dict entirely (not patch it — remove it). **Don't confuse this with `Receipts.ReceiptCode`**, a same-named but unrelated column on a different table that stores the payment's text code for display on receipt rows — that one stays, is actively used, and is unaffected by this decision.
+8. **RESOLVED 2026-07-19 — `Payments.ReceiptCode` dropped.** It used to silently null on every `update_payment()` save (the form had dropped the field, but the backend still wrote `data.get("ReceiptCode")` → `None`). The column is now dropped and the key removed from `update_payment()`. **`Receipts.ReceiptCode` is a different, unrelated column on another table and stays** — it holds the receipt document's own code (that column is NOT the payment's text code; the earlier "stores the text PaymentCode" description was wrong). Kept for history.
 
-9. **Status badge CSS classes don't fully cover any table's actual `Status` values, in either direction.** Confirmed by reading `style.css` directly:
-   - No class exists for: Projects' `On-Hold`, Payments' `Return-Closed`, or any of the Invoices/Receipts enum values (`Missing`, `Requested`/`Requested Ahmet`/`Requested Heba`, `Received`, `Translated`, `Done` — `Sent` is the one exception, reused from Payments). Any of these render as an unstyled badge today.
-   - Classes exist with no matching value anywhere: `status-pending`, `status-approved`, `status-rejected`, `status-paid`, `status-verified`, `status-suspended` — dead CSS, harmless but worth pruning.
-   - The five missing six-stage-enum classes need adding as part of the frontend migration step below (the new `Status` values won't render correctly otherwise). `On-Hold` and `Return-Closed` are unrelated to that migration — separate, smaller cleanup.
+9. **PARTLY RESOLVED 2026-07-19 — badge classes added.** `style.css` now has classes for the six-stage enum (`Missing/Requested/Received/Translated/Sent/Done`) plus `On-Hold` (Projects) and `Return-Closed` (Payments). Remaining cleanup (harmless): dead classes with no matching value anywhere — `status-pending`, `status-approved`, `status-rejected`, `status-paid`, `status-verified`, `status-suspended` — still present, worth pruning in Phase 6.
+
+10. **RESOLVED 2026-07-19 — auto-create receipt FK bug.** `create_payment()`'s auto-receipt wrote the TEXT `PaymentCode` into the BIGINT `Receipts.PaymentCode` FK (would error on any non-numeric PaymentCode, leaving the payment saved but no receipt). Now writes the numeric `payment_id`. See Business Logic → Auto-create Receipt on Payment.
+
+11. **Shared Supabase client is not concurrency-safe (mitigated, not fixed).** The single global `supabase` client (`app.py`) is shared across Flask's dev-server threads; concurrent requests collide on its socket → `500 [Errno 11] Resource temporarily unavailable` (EAGAIN). Surfaced when the UI fired 5 lookup fetches via `Promise.all`. **Mitigated 2026-07-19** by loading those lookups sequentially in `loadLookupData` — but that only removes the UI's own burst. The real fix (per-request / thread-local client, or a serialized server) is a **Phase 5** task, when n8n hits the API concurrently with the UI.
 
 ---
 

@@ -78,7 +78,7 @@ Key fields per table (not exhaustive — see actual `tableConfigs` in the app
 code for full field lists):
 
 - **Suppliers**: `CompanyName`, `Country`, `ContactPerson` (external — who you
-  request documents *from*), `TaxId`.
+  request documents *from*). (`TaxId` dropped 2026-07-19.)
 - **Donors**: `DonorCode`, `DonorName`, `Country`, `ContactPerson`.
 - **Decisions**: `DecisionNumber`, `DecisionDate`, `Description`, `Attendants`.
 - **Projects**: `ProjectCode`, `Subject`, `SupplierId`, `Budget`, `Currency`,
@@ -89,6 +89,8 @@ code for full field lists):
   `Currency`, `Status` (Sent/Declared/Closed/Returned/Return-Closed),
   `PaymentDate`, `DeclarationDate`, `ClosingDate` — **fix applied: these last
   two are now included in `columns`, previously only in `formFields`.**
+  (`Payments.ReceiptCode` was dropped 2026-07-19 — removed from the DB and from
+  `update_payment()`.)
   `DaysToClose` is **computed at read time, not stored**:
   ```python
   if payment.get("ClosingDate"):
@@ -102,25 +104,32 @@ code for full field lists):
 - **Invoices**: `InvoiceCode`, `No`, `SupplierId`, `DonorId`, `ProjectCode`,
   `Date`, `Amount`, `Currency`, `Status`, `Notes`.
 - **Receipts**: `ReceiptCode`, `No`, `ProjectCode`, `PaymentCode`,
-  `PaymentDate`, `ReceiptDate` — **fix applied: was inconsistently named
-  `Date` in `columns` vs `ReceiptDate` in `formFields`; now consistent.**
-  `Amount`, `Currency`, `Status`, `Notes`.
-- **Status (unified)** on Invoices and Receipts — **fix applied: previously
-  two overlapping fields (`Status` with staff names baked in, e.g. "Requested
-  Ahmet"; and a separate `Fatura`/`Makbuz` field with near-duplicate stages).
-  Merged into one `Status` enum:**
-  `Missing → Requested → Received → Translated → Sent → Done`
-  Staff names removed from the enum entirely — see Open Issue #1 below on
-  what this dropped.
+  `PaymentDate`, `ReceiptDate`, `Amount`, `Currency`, `Status`,
+  `RequiresTranslation`, `AssignedTo`, `Notes`. The `Date`-vs-`ReceiptDate`
+  naming mismatch was fixed earlier. **Domain rule (Abdullah, 2026-07-19): a
+  receipt's `Amount`/`Currency` can legitimately differ from its payment's
+  (bank cut / commission), so any payment→receipt sync must NEVER overwrite
+  receipt money fields — the gap between `Receipt.Amount` and the joined
+  `PaymentAmount` is itself a compliance signal.** (Feeds the Phase-4 cascade.)
+- **Status (unified)** on Invoices and Receipts — **APPLIED IN CODE 2026-07-19**
+  (was only *decided* until then — the running frontend still carried staff-name
+  statuses + the `Fatura`/`Makbuz` fields through 2026-07-18, a third confirmed
+  doc-drift instance). Previously two overlapping fields (`Status` with staff
+  names baked in, e.g. "Requested Ahmet"; and a separate `Fatura`/`Makbuz` field
+  with near-duplicate stages). Now one `Status` enum:
+  `Missing → Requested → Received → Translated → Sent → Done`, staff names
+  removed. Two new fields added alongside on both tables: `RequiresTranslation`
+  (boolean, default `true`) and `AssignedTo` (text) — the latter closes Open
+  Issue #1. `Fatura`/`Makbuz` columns dropped from the DB.
 
 ## 5. Open Issues (unresolved — do not build past these silently)
 
-1. **Internal assignee gap.** Merging Status removed the "Requested Ahmet" /
-   "Requested Heba" distinction, which tracked *which internal staff member*
-   currently owns a document for translation/signing — not the same person as
-   `Supplier.ContactPerson` (external). Decide: does this app need a separate
-   `AssignedTo` field, or is per-staff routing intentionally out of scope for
-   v1? Not yet decided.
+1. **Internal assignee gap — RESOLVED 2026-07-19.** Merging Status removed the
+   "Requested Ahmet" / "Requested Heba" distinction (which internal staff member
+   currently owns a document for translation/signing — not `Supplier.ContactPerson`,
+   who is external). Resolved by adding an `AssignedTo` text field to
+   Invoices/Receipts: single current holder, no history (overwrite loses the
+   prior name — accepted tradeoff).
 2. **Requirements table does not exist yet.** No schema, no cascade/trigger
    logic. This is the next concrete build task. Cascade behavior agreed in
    principle: an Invoice/Receipt Status change updates the linked Requirements
@@ -138,10 +147,13 @@ code for full field lists):
    downstream removes most mis-keying risk, but the initial dropdown selection
    of Supplier/Project when creating a Payment is still manual and unvalidated.
    Flagged as a v2 concern, not a blocker for v1.
-5. **Schema audit not yet complete.** Two `columns`/`formFields` mismatches
-   were caught and fixed (Payments dates, Receipts date naming) by manual
-   review — the other four tables (Suppliers, Donors, Decisions, Projects)
-   have not been explicitly checked for the same class of bug.
+5. **Schema audit — field-level pass done 2026-07-19.** The other four tables
+   (Suppliers, Donors, Decisions, Projects) were run through the three-way,
+   both-directions audit (columns ↔ formFields ↔ backend dict) and all four
+   **PASS** — no field mismatch remains. Suppliers was additionally verified
+   end-to-end via a live create after the `TaxId` drop; a belt-and-suspenders
+   end-to-end test row for Donors/Decisions/Projects is still worth doing but
+   nothing is known broken.
 6. **n8n ↔ database integration not yet built.** Plan (agreed, not
    implemented): n8n stops reading Google Sheets on a schedule and instead
    pulls from the app's database; Drive folder creation switches from
