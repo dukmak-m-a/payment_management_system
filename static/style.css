@@ -843,3 +843,84 @@ body::before {
 /* Previously-unstyled statuses on other tables */
 .status-on-hold       { background: var(--warning);        color: var(--bg-dark); }
 .status-return-closed { background: var(--text-secondary); color: var(--bg-dark); }
+
+/* ============================================================
+   Login page (added with auth, 2026-07-19)
+   Reuses .form-group + .btn-primary; only layout/card is new.
+   ============================================================ */
+
+.login-wrapper {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    position: relative;
+    z-index: 1;
+}
+
+.login-card {
+    width: 100%;
+    max-width: 420px;
+    background: var(--bg-mid);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 2.5rem;
+    box-shadow: 0 10px 40px var(--shadow);
+    text-align: center;
+}
+
+.login-card .logo-img {
+    max-height: 64px;
+    margin-bottom: 1rem;
+}
+
+.login-card .subtitle {
+    margin-bottom: 2rem;
+}
+
+.login-form {
+    text-align: left;
+}
+
+.login-error {
+    background: rgba(239, 71, 111, 0.12);
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.9rem;
+    text-align: left;
+}
+
+.login-submit {
+    width: 100%;
+    justify-content: center;
+    margin-top: 0.5rem;
+}
+
+/* Logout button in the main app header */
+.logout-form {
+    margin-left: auto;
+}
+
+.btn-logout {
+    font-family: 'Space Mono', monospace;
+    padding: 0.6rem 1.2rem;
+    background: transparent;
+    border: 2px solid var(--border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-radius: 10px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    transition: all 0.2s ease;
+}
+
+.btn-logout:hover {
+    border-color: var(--danger);
+    color: var(--danger);
+}

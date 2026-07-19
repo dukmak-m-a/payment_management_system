@@ -20,6 +20,12 @@
                     <h1 class="title">Payment Management</h1>
                     <p class="subtitle">Database Management System</p>
                 </div>
+                <!-- Logout is a POST form, not an <a href> link: GET links can be
+                     pre-fetched by browsers/extensions or triggered cross-site,
+                     silently logging the user out. State changes = POST. -->
+                <form method="POST" action="/logout" class="logout-form">
+                    <button type="submit" class="btn-logout">Sign Out</button>
+                </form>
             </div>
         </header>
 

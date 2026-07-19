@@ -264,6 +264,26 @@ function setupEventListeners() {
 }
 
 // ============================================================
+//  API helper — session-aware fetch
+// ============================================================
+
+// Every API call goes through this wrapper instead of raw fetch().
+// Why a wrapper: the session can expire (8h) or be logged out in another tab
+// at ANY moment — meaning any of our ~8 fetch call sites can suddenly get a
+// 401 instead of data. Handling that in one place beats copy-pasting the same
+// if-statement into every call site (and beats forgetting one).
+async function apiFetch(url, options) {
+    const response = await fetch(url, options);
+    if (response.status === 401) {
+        // Session gone — send the browser to the login page. The throw stops
+        // the caller from trying to .json() a 401 body as if it were data.
+        window.location.href = '/login';
+        throw new Error('Not authenticated');
+    }
+    return response;
+}
+
+// ============================================================
 //  Data Loading
 // ============================================================
 
@@ -274,11 +294,11 @@ async function loadLookupData() {
         // at once collides on its socket and throws EAGAIN ([Errno 11]). One request
         // in flight at a time avoids the collision. (Real backend concurrency-safety —
         // needed once n8n hits the API alongside the UI — is a Phase 5 task.)
-        const suppliers = await fetch('/api/suppliers').then(r => r.json());
-        const donors    = await fetch('/api/donors').then(r => r.json());
-        const projects  = await fetch('/api/projects').then(r => r.json());
-        const decisions = await fetch('/api/decisions').then(r => r.json());
-        const payments  = await fetch('/api/payments').then(r => r.json());
+        const suppliers = await apiFetch('/api/suppliers').then(r => r.json());
+        const donors    = await apiFetch('/api/donors').then(r => r.json());
+        const projects  = await apiFetch('/api/projects').then(r => r.json());
+        const decisions = await apiFetch('/api/decisions').then(r => r.json());
+        const payments  = await apiFetch('/api/payments').then(r => r.json());
         lookupData = { suppliers, donors, projects, decisions, payments };
     } catch (error) {
         console.error('Error loading lookup data:', error);
@@ -289,7 +309,7 @@ async function loadLookupData() {
 async function loadData() {
     showLoading(true);
     try {
-        const response = await fetch(`/api/${currentTable}`);
+        const response = await apiFetch(`/api/${currentTable}`);
         currentData = await response.json();
         renderTable();
     } catch (error) {
@@ -591,7 +611,7 @@ async function handleFormSubmit(e) {
         const url = editingId ? `/api/${currentTable}/${editingId}` : `/api/${currentTable}`;
         const method = editingId ? 'PUT' : 'POST';
 
-        const response = await fetch(url, {
+        const response = await apiFetch(url, {
             method: method,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(formData)
@@ -681,7 +701,7 @@ async function deleteRecord(id) {
     showLoading(true);
 
     try {
-        const response = await fetch(`/api/${currentTable}/${id}`, { method: 'DELETE' });
+        const response = await apiFetch(`/api/${currentTable}/${id}`, { method: 'DELETE' });
         const result = await response.json();
 
         if (result.success) {
