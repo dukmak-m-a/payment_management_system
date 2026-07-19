@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In — Payment Management System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="login-wrapper">
+        <div class="login-card">
+            <div class="header-logo">
+                <img src="https://hayirsosyal.org/img/logo.webp" alt="Logo" class="logo-img">
+            </div>
+            <h1 class="title">Payment Management</h1>
+            <p class="subtitle">Sign in to continue</p>
+
+            {# The error comes from the server via Jinja. Note the pattern:
+               ONE generic message for every failure mode — never tell the
+               visitor whether it was the username or the password. #}
+            {% if error %}
+            <div class="login-error" role="alert">{{ error }}</div>
+            {% endif %}
+
+            <!-- Classic form POST (not fetch): the browser submits, the server
+                 either redirects to / on success or re-renders this page with
+                 an error. Simpler than JS for a full-page flow, and it gives
+                 password managers their expected behavior. -->
+            <form method="POST" action="{{ url_for('login') }}" class="login-form">
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" name="username"
+                           autocomplete="username" autofocus required>
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password"
+                           autocomplete="current-password" required>
+                </div>
+                <button type="submit" class="btn-primary login-submit">Sign In</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
