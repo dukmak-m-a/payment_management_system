@@ -59,7 +59,6 @@ const tableConfigs = {
     { name: 'PaymentDate', label: 'Payment Date', type: 'date', required: true },
     { name: 'DeclarationDate', label: 'Declaration Date', type: 'date', required: true },
     { name: 'ClosingDate', label: 'Closing Date', type: 'date', required: false }
-    // ReceiptCode removed
 ]
     },
     projects: {
@@ -220,6 +219,36 @@ const tableConfigs = {
     }
 };
 
+// Column config for the read-only compliance report grid (mirrors the legacy
+// 19-col sheet order). Unlike tableConfigs.columns (array of key strings),
+// each entry here is an OBJECT: `key` = the view column, `label` = the header.
+//   kind: 'meta'      -> plain payment/project fields
+//         'human'     -> the 8 editable slots (get scope + doc for the edit path)
+//         'computed'  -> the 4 SQL-derived slots + Closed (read-only, never editable)
+// payment_id / project_id are intentionally NOT columns — step 4 reads them off
+// each row for edit-routing.
+const complianceColumns = [
+  { key:'payment_code',   label:'Payment',        kind:'meta' },
+  { key:'organisation',   label:'Organisation',   kind:'meta' },
+  { key:'transfer_date',  label:'Transfer Date',  kind:'meta' },
+  { key:'karar_no',       label:'Karar No.',      kind:'meta' },
+  { key:'amount',         label:'Amount',         kind:'meta' },
+  { key:'currency',       label:'Currency',       kind:'meta' },
+  { key:'dekont',         label:'Dekont',         kind:'human', scope:'payment', doc:'Dekont' },
+  { key:'transfer_order', label:'Transfer Order', kind:'human', scope:'payment', doc:'TransferOrder' },
+  { key:'contract',       label:'Contract',       kind:'human', scope:'project', doc:'Contract' },
+  { key:'invoice',        label:'Invoice',        kind:'computed' },
+  { key:'fatura',         label:'Fatura',         kind:'computed' },
+  { key:'receipt',        label:'Receipt',        kind:'computed' },
+  { key:'makbuz',         label:'Makbuz',         kind:'computed' },
+  { key:'odeme_emri',     label:'Ödeme Emri',     kind:'human', scope:'payment', doc:'OdemeEmri' },
+  { key:'teslim_belgesi', label:'Teslim Belgesi', kind:'human', scope:'project', doc:'TeslimBelgesi' },
+  { key:'alindi_belgesi', label:'Alındı Belgesi', kind:'human', scope:'project', doc:'AlindiBelgesi' },
+  { key:'fotograflar',    label:'Fotograflar',    kind:'human', scope:'project', doc:'Fotograflar' },
+  { key:'karar',          label:'Karar',          kind:'human', scope:'project', doc:'Karar' },
+  { key:'closed',         label:'Closed',         kind:'computed' },
+];
+
 // ============================================================
 //  Initialization
 // ============================================================
@@ -308,6 +337,7 @@ async function loadLookupData() {
 
 async function loadData() {
     showLoading(true);
+    if (currentTable === 'compliance') return loadComplianceReport();
     try {
         const response = await apiFetch(`/api/${currentTable}`);
         currentData = await response.json();
@@ -315,6 +345,19 @@ async function loadData() {
     } catch (error) {
         console.error('Error loading data:', error);
         showNotification('Error loading data', 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+async function loadComplianceReport () {
+    showLoading(true);
+    try {
+        const data = await apiFetch('/api/compliance_report').then(r => r.json());
+        console.log('compliance report:',data);
+    } catch (error) {
+        console.error('Error loading compliance report:',error);
+        showNotification('Error loading compliance report','error');
     } finally {
         showLoading(false);
     }

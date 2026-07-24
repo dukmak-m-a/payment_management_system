@@ -196,8 +196,16 @@ three views, Missing-seeding in `create_payment`/`create_project`, an **auto-Inv
 project create** (mirrors the auto-receipt), and the **backend edit path**: `GET
 /api/compliance_report` + `PUT /api/requirements` (upserts one human slot; allowlisted so
 the 4 computed slots can never be hand-set; lazily backfills pre-existing rows). **Not yet
-done:** run the SQL in Supabase; build the frontend compliance tab (read the view, edit
-human slots). Standing domain rule: a
+done: the FRONTEND compliance tab.** SQL is applied in Supabase (`compliance_report`
+returns rows). The tab is a 4-step arc: (1) nav button + `loadComplianceReport()` that logs
+the report — **DONE, in `app.js`**; (2) **RESUME HERE** — render read-only into
+`#tableHead`/`#tableBody` via a new `renderComplianceReport(data)` modelled on `renderTable`,
+driven by a `complianceColumns` config (sheet order; per column `kind` = meta/computed/human,
+plus `scope`+`doc` for human slots); (3) render the 8 human slots as `<select>` dropdowns
+(computed slots stay read-only badges); (4) wire change → `PUT /api/requirements` → re-fetch
+(project-grain slot edits update every row of that project — agreed "edit in place"). JS is
+Abdullah's learning area: guide, provide config/scaffolds, let him write the render/event
+code. Standing domain rule: a
 receipt's `Amount`/`Currency` can legitimately differ from its payment's (bank cut /
 commission) — never overwrite receipt money fields; the `Receipt.Amount` vs joined
 `PaymentAmount` gap is itself a compliance signal.
