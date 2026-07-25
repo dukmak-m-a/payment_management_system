@@ -131,7 +131,7 @@ const tableConfigs = {
     },
     receipts: {
         name: 'Receipts',
-        columns: ['id', 'ReceiptCode', 'No', 'ProjectCode', 'PaymentCode',
+        columns: ['id', 'ReceiptCode', 'No', 'ProjectCode', 'paymentCodeDisplay',
               'PaymentDate', 'ReceiptDate', 'Amount', 'Currency', 'Status',
               'RequiresTranslation', 'AssignedTo', 'Notes'],
         displayNames: {
@@ -139,7 +139,7 @@ const tableConfigs = {
             'ReceiptCode': 'Receipt Code',
             'No': 'No.',
             'ProjectCode': 'Project',
-            'PaymentCode': 'Payment Code',   // ← changed from 'Payment'
+            'paymentCodeDisplay': 'Payment Code',   // ← changed from 'Payment'
             'PaymentDate': 'Payment Date',
             'ReceiptDate': 'Receipt Date',
             'Amount': 'Amount',
@@ -153,7 +153,7 @@ const tableConfigs = {
             { name: 'ReceiptCode', label: 'Receipt Code', type: 'text', required: false },
             { name: 'No', label: 'No.', type: 'text', required: false },
             { name: 'ProjectCode', label: 'Project', type: 'select', required: false, lookup: 'projectsByCode' },
-            { name: 'PaymentCode', label: 'Payment', type: 'select', required: false, lookup: 'payments' },
+            { name: 'PaymentCode', label: 'Payment Code', type: 'select', required: false, lookup: 'payments' },
             { name: 'PaymentDate', label: 'Payment Date', type: 'date', required: false },
             { name: 'ReceiptDate', label: 'Receipt Date', type: 'date', required: false },
             { name: 'Amount', label: 'Amount', type: 'number', required: false, step: '0.01' },
@@ -228,7 +228,7 @@ const tableConfigs = {
 // payment_id / project_id are intentionally NOT columns — step 4 reads them off
 // each row for edit-routing.
 const complianceColumns = [
-  { key:'payment_code',   label:'Payment',        kind:'meta' },
+  { key:'payment_code',   label:'Payment Code',        kind:'meta' },
   { key:'organisation',   label:'Organisation',   kind:'meta' },
   { key:'transfer_date',  label:'Transfer Date',  kind:'meta' },
   { key:'karar_no',       label:'Karar No.',      kind:'meta' },
@@ -354,13 +354,52 @@ async function loadComplianceReport () {
     showLoading(true);
     try {
         const data = await apiFetch('/api/compliance_report').then(r => r.json());
-        console.log('compliance report:',data);
+        renderComplianceReport(data);
     } catch (error) {
         console.error('Error loading compliance report:',error);
         showNotification('Error loading compliance report','error');
     } finally {
         showLoading(false);
     }
+}
+
+function renderComplianceReport(data) {
+    const thead = document.getElementById('tableHead');
+    const tbody = document.getElementById('tableBody');
+
+    thead.innerHTML = `
+        <tr>
+            ${complianceColumns.map(col => `<th>${col.label}</th>`).join('')}
+        </tr>
+    `;
+    if (data.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="${complianceColumns.length}" style="text-align: center; padding: 3rem;">
+                    No records found
+                </td>
+            </tr>
+        `;
+        return;
+    }
+    tbody.innerHTML = data.map(row => `
+        <tr>
+            ${complianceColumns.map(col => `<td>${formatComplianceCell(col.key, row[col.key])}</td>`).join('')}
+        </tr>
+            `).join('');
+}
+
+function formatComplianceCell(column, value) {
+    if (value === null || value === undefined) {
+        return '<span style="color: #666;">—</span>';
+    }
+    if (column === 'amount') {
+        return parseFloat(value).toLocaleString('en-US', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+    return value;
 }
 
 // ============================================================
@@ -693,8 +732,7 @@ function viewDetails(id) {
 
     modalTitle.textContent = `${config.name} Details — ID: ${id}`;
 
-    const allFields = Object.keys(record)
-        .filter(key => key !== 'id')
+    const allFields = getColumnOrder(currentTable)
         .map(key => {
             const displayName = config.displayNames[key] || key;
             let value = formatCell(key, record[key]);

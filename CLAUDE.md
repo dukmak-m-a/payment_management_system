@@ -81,6 +81,15 @@ manager may eventually read this repo.
    naming consistency across layers, edge cases, not just "does it run."
    Flag anything that contradicts an already-documented decision instead of
    assuming the code is the newer source of truth.
+8. **Never write or edit application code unless Abdullah explicitly asks
+   you to code it yourself.** This covers `app.py`, `static/app.js`,
+   `static/style.css`, `templates/*.html`, and `sql/*.sql` — he is building
+   this entire app with your guidance, not delegating it. Give him: exact
+   file/line to touch, the config/schema/scaffold shape, the concept he
+   needs (e.g. event delegation, `.map`, upsert semantics), and what to
+   verify after — then wait for his code. Reviewing/critiquing what he
+   wrote, and editing the three mentoring docs (`CLAUDE.md`, `agent.md`,
+   `project-context.md`) to keep them reconciled, are both still your job.
 
 ## Core architectural principles (apply to all future decisions, not just past ones)
 

@@ -167,7 +167,7 @@ def get_receipts():
             receipt["ProjectSubject"]  = (row.get("Projects") or {}).get("Subject")
             receipt["PaymentAmount"]   = (row.get("Payments") or {}).get("Amount")
             receipt["PaymentCurrency"] = (row.get("Payments") or {}).get("Currency")
-            receipt["PaymentCode"]     = (row.get("Payments") or {}).get("PaymentCode")
+            receipt["paymentCodeDisplay"] = (row.get("Payments") or {}).get("PaymentCode")
             receipts.append(receipt)
 
         return jsonify(receipts)
