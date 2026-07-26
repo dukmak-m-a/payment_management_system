@@ -249,6 +249,11 @@ const complianceColumns = [
   { key:'closed',         label:'Closed',         kind:'computed' },
 ];
 
+// States of the compliance report'
+const Requirement_States = ['Missing', 'Unnecessary', 'Requested', 'Collected'];
+
+
+
 // ============================================================
 //  Initialization
 // ============================================================
@@ -289,6 +294,22 @@ function setupEventListeners() {
     });
     document.getElementById('columnModal').addEventListener('click', (e) => {
         if (e.target.id === 'columnModal') closeColumnModal();
+    });
+    document.getElementById('tableBody').addEventListener('change', async (e) => {
+        if (e.target.matches('.compliance-select')) {
+            const response = await apiFetch('/api/requirements', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    scope: e.target.dataset.scope,
+                    doc_type: e.target.dataset.doc,
+                    status: e.target.value,
+                    owner_id: Number(e.target.dataset.ownerId)
+                })
+            });
+            const result = await response.json();
+            await loadComplianceReport();
+        }
     });
 }
 
@@ -384,20 +405,42 @@ function renderComplianceReport(data) {
     }
     tbody.innerHTML = data.map(row => `
         <tr>
-            ${complianceColumns.map(col => `<td>${formatComplianceCell(col.key, row[col.key])}</td>`).join('')}
+            ${complianceColumns.map(col => `<td>${formatComplianceCell(col, row)}</td>`).join('')}
         </tr>
             `).join('');
 }
 
-function formatComplianceCell(column, value) {
+function formatComplianceCell(column, row) {
+    const value = row[column.key];
+    const kind = column.kind;
+    const scope = column.scope;
+    const doc = column.doc;
     if (value === null || value === undefined) {
         return '<span style="color: #666;">—</span>';
     }
-    if (column === 'amount') {
+    let options = '';
+    let ownerId = null;
+    if (scope === 'payment') {
+        ownerId = row.payment_id;
+    } else {
+        ownerId = row.project_id;
+    }
+    if (kind === 'human') {
+        options = Requirement_States.map(item =>
+                    `<option value="${item}" ${value === item ? 'selected' : ''}> ${item} </option>`
+        ).join('');
+        const statusClass = 'status-' + value.toLowerCase().replace(/\s+/g, '-');
+        return `<select class="compliance-select status-badge ${statusClass}" data-scope="${scope}" data-doc="${doc}" data-owner-id="${ownerId}" data-key="${column.key}">${options}</select>`;
+    }
+    if (column.key === 'amount') {
         return parseFloat(value).toLocaleString('en-US', {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
         });
+    }
+    if (Requirement_States.includes(value)) {
+        const statusClass = 'status-' + value.toLowerCase().replace(/\s+/g, '-');
+        return `<span class="status-badge ${statusClass}">${value}</span>`;
     }
     return value;
 }

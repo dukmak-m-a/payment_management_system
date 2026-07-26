@@ -844,6 +844,23 @@ body::before {
 .status-on-hold       { background: var(--warning);        color: var(--bg-dark); }
 .status-return-closed { background: var(--text-secondary); color: var(--bg-dark); }
 
+/* Requirements table four-state values (Missing/Requested reuse the classes
+   above — same risk-asymmetry colours apply). */
+.status-collected     { background: var(--success);        color: var(--bg-dark); }
+.status-unnecessary   { background: var(--text-secondary); color: var(--bg-dark); }
+
+/* Compliance-tab editable slots: a <select> wearing .status-badge, so it
+   needs its native chrome stripped to actually look like the pill. */
+.compliance-select {
+    border: none;
+    cursor: pointer;
+}
+
+.compliance-select:focus {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
 /* ============================================================
    Login page (added with auth, 2026-07-19)
    Reuses .form-group + .btn-primary; only layout/card is new.

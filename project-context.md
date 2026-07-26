@@ -157,31 +157,36 @@ Security phase started (parallel to Phase 4). Decisions and their why:
    who is external). Resolved by adding an `AssignedTo` text field to
    Invoices/Receipts: single current holder, no history (overwrite loses the
    prior name — accepted tradeoff).
-2. **Requirements table — DESIGN DECIDED 2026-07-19, NOT yet built in code**
-   (no view or table exists yet — treat as decided-in-conversation until the SQL
-   lands). Cascade mechanism resolved: **compute the four derived slots in SQL
-   views on read — no stored copy, no DB trigger, no app-write cascade, no
-   reconciler.** A slot that is never stored cannot drift. Two views:
-   `receipt_compliance` (**payment-grain**; Receipt + Receipt-Translation from
-   `Receipts.Status`/`RequiresTranslation`) and `invoice_compliance`
-   (**project-grain**). The invoice slot is an **amount-coverage** rule, not a
-   single-Status passthrough (this supersedes the old locked single-invoice
-   formula in `CLAUDE.md`, which assumed one invoice): **Collected when
-   Σ(in-hand invoices with Status ≥ Received) ≥ Σ(project's non-returned
-   payments)** — every dollar actually spent is documented. Denominator is
-   derived from payments, so **no `ActualBudget` column** is added.
-   **Ungated/live:** recomputed on every read, so a false "Collected" cannot
-   persist — new spend re-opens it. Still open: the project-grain
-   invoice-*translation* aggregate rule; the human-edited slots' table shape
-   (wide vs long — `CLAUDE.md` is internally contradictory on this); and the
-   authoritative doc-type list.
+2. **Requirements table — RESOLVED 2026-07-26.** Design decided 2026-07-19, SQL
+   applied in Supabase, and the full frontend edit path (dropdowns → `PUT
+   /api/requirements` → re-fetch) verified end-to-end in the browser 2026-07-26 —
+   see `CLAUDE.md` Current focus for the exact build. Cascade mechanism:
+   **compute the four derived slots in SQL views on read — no stored copy, no DB
+   trigger, no app-write cascade, no reconciler.** A slot that is never stored
+   cannot drift. Two views: `receipt_compliance` (**payment-grain**; Receipt +
+   Receipt-Translation from `Receipts.Status`/`RequiresTranslation`) and
+   `invoice_compliance` (**project-grain**). The invoice slot is an
+   **amount-coverage** rule, not a single-Status passthrough (this supersedes
+   the old locked single-invoice formula, which assumed one invoice):
+   **Collected when Σ(in-hand invoices with Status ≥ Received) ≥ Σ(project's
+   non-returned payments)** — every dollar actually spent is documented.
+   Denominator is derived from payments, so **no `ActualBudget` column** is
+   added. **Ungated/live:** recomputed on every read, so a false "Collected"
+   cannot persist — new spend re-opens it. The previously-open sub-items are now
+   all resolved too: the project-grain invoice-*translation* aggregate rule is
+   locked in `CLAUDE.md`; the human-edited slots' table shape is **long**, split
+   into `PaymentRequirements` (3 payment-grain doc types) and
+   `ProjectRequirements` (5 project-grain doc types) — this is the authoritative
+   8-doc-type list, resolving the old wide-vs-long contradiction.
 2b. **`to_verify` status integration**: confirmed conceptually (Section 3) but
    not yet reflected in the not-yet-built Requirements table's status enum.
-3. **Status pipeline isn't strictly linear across document types** — e.g. not
-   every document type requires a `Translated` step (Bank Receipt didn't in
-   the legacy sheet; Invoice and Company Receipt did). The cascade logic needs
-   to handle "skip this stage for this document type," not assume every row
-   passes through all six Status values.
+3. **Status pipeline isn't strictly linear across document types — RESOLVED
+   by the four-state Requirements model itself**, not by special-casing the
+   six-stage `Status` pipeline. A doc type that doesn't apply to a given
+   payment/project is marked `Unnecessary` (a real, human-set slot value, not
+   `Missing`); the two computed translation slots go `Unnecessary` automatically
+   when `RequiresTranslation` is false. No per-doc-type "skip this stage" logic
+   was needed.
 4. **Mis-selection risk at Project/Payment creation.** Auto-populating codes
    downstream removes most mis-keying risk, but the initial dropdown selection
    of Supplier/Project when creating a Payment is still manual and unvalidated.

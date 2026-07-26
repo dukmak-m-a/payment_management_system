@@ -125,8 +125,9 @@ reconstruct it from memory of the frontend code.
   report reads): `Missing / Unnecessary / Requested / Collected`
 
 **Requirements design — BUILT 2026-07-19 in `sql/phase4_requirements.sql` +
-backend seeding (`create_payment`/`create_project`). NOT yet run in Supabase; no
-edit UI yet. Cascade mechanism DECIDED: compute-in-view — no DB trigger, no
+backend seeding (`create_payment`/`create_project`). APPLIED in Supabase; full
+edit UI now built and verified end-to-end 2026-07-26 (see Current focus below).
+Cascade mechanism DECIDED: compute-in-view — no DB trigger, no
 app-write cascade, no reconciler. A slot that is never stored cannot drift.**
 
 - **Human-edited slots = long shape, source of truth**, split by grain into two
@@ -196,28 +197,39 @@ in the running code. Kept as the record of what changed.
    (`|| ''` → `?? ''`, which had blanked a stored `false`/`0` on edit), and
    `loadLookupData` serialized to stop concurrent-burst EAGAIN 500s (`agent.md` #11).
 
-## Current focus / next (as of 2026-07-19)
+## Current focus / next (as of 2026-07-26)
 
-**Phase 4 — Requirements table + status cascade: DESIGN DONE, PARTIALLY BUILT.** The
-cascade trigger question is resolved — **compute-in-view** (see the Requirements design
-section above and `sql/phase4_requirements.sql`). Built: the two Requirements tables, the
-three views, Missing-seeding in `create_payment`/`create_project`, an **auto-Invoice on
-project create** (mirrors the auto-receipt), and the **backend edit path**: `GET
-/api/compliance_report` + `PUT /api/requirements` (upserts one human slot; allowlisted so
-the 4 computed slots can never be hand-set; lazily backfills pre-existing rows). **Not yet
-done: the FRONTEND compliance tab.** SQL is applied in Supabase (`compliance_report`
-returns rows). The tab is a 4-step arc: (1) nav button + `loadComplianceReport()` that logs
-the report — **DONE, in `app.js`**; (2) **RESUME HERE** — render read-only into
-`#tableHead`/`#tableBody` via a new `renderComplianceReport(data)` modelled on `renderTable`,
-driven by a `complianceColumns` config (sheet order; per column `kind` = meta/computed/human,
-plus `scope`+`doc` for human slots); (3) render the 8 human slots as `<select>` dropdowns
-(computed slots stay read-only badges); (4) wire change → `PUT /api/requirements` → re-fetch
-(project-grain slot edits update every row of that project — agreed "edit in place"). JS is
-Abdullah's learning area: guide, provide config/scaffolds, let him write the render/event
-code. Standing domain rule: a
-receipt's `Amount`/`Currency` can legitimately differ from its payment's (bank cut /
+**Phase 4 — Requirements table + status cascade: DONE, verified end-to-end 2026-07-26.**
+The cascade trigger question is resolved — **compute-in-view** (see the Requirements design
+section above and `sql/phase4_requirements.sql`). SQL is applied in Supabase. Backend edit
+path (`GET /api/compliance_report` + `PUT /api/requirements`) is live. The frontend compliance
+tab's 4-step arc is now fully built and live-tested in the browser: (1) nav button +
+`loadComplianceReport()`, (2) `renderComplianceReport(data)` driven by the `complianceColumns`
+config, (3) `formatComplianceCell` renders the 8 human slots as `<select>` dropdowns
+pre-populated with their real stored value (computed slots stay read-only), (4) a delegated
+`change` listener on `#tableBody` (in `setupEventListeners()`) builds `{scope, doc_type,
+status, owner_id}` from the select's `data-*` attributes + new value, `PUT`s it to
+`/api/requirements`, then re-fetches via `loadComplianceReport()` regardless of success/failure
+— so the UI never shows an unsaved value as if it were real (risk asymmetry applied to the UI
+layer itself, not just the compliance formulas). `owner_id` is explicitly cast with `Number(...)`
+before sending, since `dataset` values are always strings and the column is `bigint`.
+Two bugs surfaced and fixed during the build, both worth remembering as a *pattern*, not just a
+one-off: (a) a `const payload = {...}` block was written as a sibling statement *after* the
+`addEventListener` callback's closing `}` instead of inside it, referencing `e` from a scope
+where it no longer existed (`ReferenceError: e is not defined`) — same class of bug as the
+earlier `data`-out-of-scope mistake in `formatComplianceCell`; (b) the request body used
+`method: 'POST'` against a route registered only for `PUT`. Standing domain rule, still
+relevant: a receipt's `Amount`/`Currency` can legitimately differ from its payment's (bank cut /
 commission) — never overwrite receipt money fields; the `Receipt.Amount` vs joined
 `PaymentAmount` gap is itself a compliance signal.
+
+**Resume here next:** two small, non-blocking items were deliberately deferred, not forgotten:
+(1) Abdullah asked to revisit **compliance-table content styling** — `.status-collected` and
+`.status-unnecessary` CSS badge classes don't exist yet (the four-state Requirements values
+currently render as bare `<select>`/text, unlike the six-stage Status badges elsewhere in the
+app which do have styled classes); (2) the `Requirment_States` constant name (in `app.js`, near
+`complianceColumns`) is a misspelling of "Requirement" — functionally fine (used consistently),
+flagged only as a portfolio-quality nit for an eventual rename. Neither blocks Phase 5/6.
 
 Remaining roadmap (full walkthrough in
 `~/.claude/plans/as-my-mentor-first-sorted-sphinx.md`): **Phase 5** — n8n ↔ DB
