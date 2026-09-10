@@ -51,7 +51,7 @@ const tableConfigs = {
       options: ['Domestic', 'International'] },
     { name: 'Bank', label: 'Bank', type: 'select', required: false, 
       options: ['Türkiye Vakıflar Bankası', 'Ziraat Katılım Bankası', 'Albaraka Türk Katılım Bankası'] },
-    { name: 'Amount', label: 'Amount', type: 'number', required: true, step: '0.01' },
+    { name: 'Amount', label: 'Amount', type: 'number', required: true, step: '0.01', min: '0' },
     { name: 'Currency', label: 'Currency', type: 'select', required: true,
       options: ['TRY', 'USD', 'EUR'] },
     { name: 'Status', label: 'Status', type: 'select', required: true,
@@ -83,7 +83,7 @@ const tableConfigs = {
             { name: 'Subject', label: 'Subject', type: 'text', required: true },
             { name: 'Description', label: 'Description', type: 'textarea', required: false },
             { name: 'SupplierId', label: 'Supplier', type: 'select', required: true, lookup: 'suppliers' },
-            { name: 'Budget', label: 'Budget', type: 'number', required: true, step: '0.01' },
+            { name: 'Budget', label: 'Budget', type: 'number', required: true, step: '0.01', min: '0' },
             { name: 'Currency', label: 'Currency', type: 'select', required: true, options: ['TRY', 'USD', 'EUR'] },
             { name: 'StartDate', label: 'Start Date', type: 'date', required: true },
             { name: 'EndDate', label: 'End Date', type: 'date', required: true },
@@ -119,7 +119,7 @@ const tableConfigs = {
             { name: 'DonorId', label: 'Donor', type: 'select', required: false, lookup: 'donors' },
             { name: 'ProjectCode', label: 'Project', type: 'select', required: false, lookup: 'projectsByCode' },
             { name: 'Date', label: 'Date', type: 'date', required: false },
-            { name: 'Amount', label: 'Amount', type: 'number', required: false, step: '0.01' },
+            { name: 'Amount', label: 'Amount', type: 'number', required: false, step: '0.01', min: '0' },
             { name: 'Currency', label: 'Currency', type: 'select', required: false, options: ['TRY', 'USD', 'EUR'] },
             { name: 'Status', label: 'Status', type: 'select', required: false,
               options: ['Missing', 'Requested', 'Received', 'Translated', 'Sent', 'Done'] },
@@ -156,7 +156,7 @@ const tableConfigs = {
             { name: 'PaymentCode', label: 'Payment Code', type: 'select', required: false, lookup: 'payments' },
             { name: 'PaymentDate', label: 'Payment Date', type: 'date', required: false },
             { name: 'ReceiptDate', label: 'Receipt Date', type: 'date', required: false },
-            { name: 'Amount', label: 'Amount', type: 'number', required: false, step: '0.01' },
+            { name: 'Amount', label: 'Amount', type: 'number', required: false, step: '0.01', min: '0' },
             { name: 'Currency', label: 'Currency', type: 'select', required: true, options: ['TRY', 'USD', 'EUR'] },
             { name: 'Status', label: 'Status', type: 'select', required: false,
               options: ['Missing', 'Requested', 'Received', 'Translated', 'Sent', 'Done'] },
@@ -339,16 +339,15 @@ async function apiFetch(url, options) {
 
 async function loadLookupData() {
     try {
-        // Load sequentially, NOT with Promise.all. The Flask dev server shares one
-        // global Supabase client that isn't safe for concurrent use — firing all five
-        // at once collides on its socket and throws EAGAIN ([Errno 11]). One request
-        // in flight at a time avoids the collision. (Real backend concurrency-safety —
-        // needed once n8n hits the API alongside the UI — is a Phase 5 task.)
-        const suppliers = await apiFetch('/api/suppliers').then(r => r.json());
-        const donors    = await apiFetch('/api/donors').then(r => r.json());
-        const projects  = await apiFetch('/api/projects').then(r => r.json());
-        const decisions = await apiFetch('/api/decisions').then(r => r.json());
-        const payments  = await apiFetch('/api/payments').then(r => r.json());
+        // Each request now receives its own backend Supabase client, so these
+        // independent lookups can load together without sharing a socket.
+        const [suppliers, donors, projects, decisions, payments] = await Promise.all([
+            apiFetch('/api/suppliers').then(r => r.json()),
+            apiFetch('/api/donors').then(r => r.json()),
+            apiFetch('/api/projects').then(r => r.json()),
+            apiFetch('/api/decisions').then(r => r.json()),
+            apiFetch('/api/payments').then(r => r.json()),
+        ]);
         lookupData = { suppliers, donors, projects, decisions, payments };
     } catch (error) {
         console.error('Error loading lookup data:', error);
@@ -702,6 +701,7 @@ function renderFormField(field) {
     } else {
         return `<input type="${field.type}" id="${field.name}" name="${field.name}"
                 ${field.step ? `step="${field.step}"` : ''}
+                ${field.min !== undefined ? `min="${field.min}"` : ''}
                 ${field.required ? 'required' : ''}>`;
     }
 }
@@ -721,6 +721,7 @@ async function handleFormSubmit(e) {
     e.preventDefault();
 
     const config = tableConfigs[currentTable];
+    const isNewProject = currentTable === 'projects' && editingId === null;
     const formData = {};
 
     config.formFields.forEach(field => {
@@ -745,10 +746,20 @@ async function handleFormSubmit(e) {
         const result = await response.json();
 
         if (result.success) {
-            showNotification(editingId ? 'Record updated successfully' : 'Record created successfully', 'success');
+            const createdDraftInvoice = isNewProject && result.invoice_id;
+            if (!createdDraftInvoice) {
+                showNotification(editingId ? 'Record updated successfully' : 'Record created successfully', 'success');
+            }
             closeModal();
             await loadLookupData();
             await loadData();
+            if (createdDraftInvoice) {
+                showNotification(
+                    'Project created. A draft invoice is ready to complete.',
+                    'success',
+                    { label: 'Open Invoice', onClick: () => openDraftInvoice(result.invoice_id) }
+                );
+            }
         } else {
             showNotification('Error: ' + result.error, 'error');
         }
@@ -758,6 +769,18 @@ async function handleFormSubmit(e) {
     } finally {
         showLoading(false);
     }
+}
+
+async function openDraftInvoice(invoiceId) {
+    currentTable = 'invoices';
+    document.querySelectorAll('.nav-btn').forEach(button => {
+        const isActive = button.dataset.table === currentTable;
+        button.classList.toggle('active', isActive);
+        button.setAttribute('aria-pressed', String(isActive));
+    });
+
+    await loadData();
+    openModal(invoiceId);
 }
 
 // ============================================================
@@ -873,11 +896,37 @@ function showLoading(show) {
     loading.classList.toggle('show', show);
 }
 
-function showNotification(message, type = 'info') {
-    if (type === 'error') {
-        console.error(message);
-        alert(message);
-    } else {
-        console.log(message);
+function showNotification(message, type = 'info', action = null) {
+    const region = document.getElementById('notificationRegion');
+    const notification = document.createElement('div');
+    notification.className = `notification notification-${type}`;
+    notification.setAttribute('role', type === 'error' ? 'alert' : 'status');
+
+    const text = document.createElement('span');
+    text.className = 'notification-message';
+    text.textContent = message;
+    notification.appendChild(text);
+
+    if (action) {
+        const actionButton = document.createElement('button');
+        actionButton.type = 'button';
+        actionButton.className = 'notification-action';
+        actionButton.textContent = action.label;
+        actionButton.addEventListener('click', async () => {
+            notification.remove();
+            await action.onClick();
+        });
+        notification.appendChild(actionButton);
     }
+
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'notification-close';
+    closeButton.setAttribute('aria-label', 'Dismiss notification');
+    closeButton.textContent = '×';
+    closeButton.addEventListener('click', () => notification.remove());
+    notification.appendChild(closeButton);
+
+    region.appendChild(notification);
+    window.setTimeout(() => notification.remove(), action ? 12000 : 5000);
 }

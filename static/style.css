@@ -254,6 +254,70 @@ body::before {
     color: var(--text-secondary);
 }
 
+/* Non-blocking save feedback. The action version stays visible longer so a
+   staff member can immediately open the draft invoice created with a project. */
+.notification-region {
+    position: fixed;
+    right: 1.5rem;
+    bottom: 1.5rem;
+    /* Keep validation feedback actionable while an add/edit modal is open. */
+    z-index: 1100;
+    display: grid;
+    gap: 0.75rem;
+    max-width: min(420px, calc(100vw - 3rem));
+}
+
+.notification {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem;
+    background: var(--bg-mid);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    border-radius: 10px;
+    box-shadow: 0 10px 30px var(--shadow);
+    color: var(--text-primary);
+}
+
+.notification-error {
+    border-left-color: var(--danger);
+}
+
+.notification-message {
+    flex: 1;
+    line-height: 1.4;
+}
+
+.notification-action,
+.notification-close {
+    border: 0;
+    cursor: pointer;
+    color: var(--text-primary);
+}
+
+.notification-action {
+    padding: 0.5rem 0.75rem;
+    background: var(--primary);
+    border-radius: 6px;
+    font: inherit;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.notification-close {
+    padding: 0.25rem;
+    background: transparent;
+    font-size: 1.4rem;
+    line-height: 1;
+}
+
+.notification-action:focus-visible,
+.notification-close:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 /* Table */
 .table-wrapper {
     background: var(--bg-mid);

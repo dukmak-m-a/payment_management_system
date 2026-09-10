@@ -1,8 +1,10 @@
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, g
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.local import LocalProxy
 import os
 import time
 
@@ -45,7 +47,25 @@ app.config.update(
 URL: str = os.environ.get("SUPABASE_URL")
 KEY: str = os.environ.get("SUPABASE_KEY")
 
-supabase: Client = create_client(URL, KEY)
+if not URL or not KEY:
+    raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must both be set in .env")
+
+
+def _get_supabase_client() -> Client:
+    """Create one Supabase client for each Flask request.
+
+    The sync client keeps HTTP/session state internally. Sharing a single
+    module-level instance across Flask threads caused concurrent UI requests
+    to collide (EAGAIN); storing it on ``g`` scopes it to the active request.
+    """
+    if "supabase_client" not in g:
+        g.supabase_client = create_client(URL, KEY)
+    return g.supabase_client
+
+
+# Preserve the existing route/helper call sites while resolving the client from
+# Flask's request-local storage at the moment it is used.
+supabase = LocalProxy(_get_supabase_client)
 
 
 # ============================================================
@@ -64,6 +84,118 @@ def _to_bool(value, default=True):
     if value is None or value == "":
         return default
     return str(value).strip().lower() in {"true", "t", "yes", "1"}
+
+
+_PAYMENT_STATUSES = {"Sent", "Declared", "Closed", "Returned", "Return-Closed"}
+_DOCUMENT_STATUSES = {"Missing", "Requested", "Received", "Translated", "Sent", "Done"}
+_PROJECT_STATUSES = {"Active", "Completed", "On-Hold", "Cancelled"}
+_CURRENCIES = {"TRY", "USD", "EUR"}
+
+_DONOR_FIELDS = ("DonorCode", "DonorName", "Country", "ContactPerson")
+_SUPPLIER_FIELDS = ("CompanyName", "Country", "ContactPerson")
+_DECISION_FIELDS = ("DecisionNumber", "DecisionDate", "Description", "Attendants", "Notes")
+_PROJECT_FIELDS = ("ProjectCode", "Subject", "Description", "SupplierId", "Budget", "Currency",
+                   "StartDate", "EndDate", "Status", "DriveFolderLink")
+_PAYMENT_FIELDS = ("PaymentCode", "SupplierId", "Destination", "ProjectId", "DonorId", "DecisionId",
+                   "Bank", "Amount", "Currency", "Status", "DeclarationDate", "PaymentDate", "ClosingDate")
+_RECEIPT_FIELDS = ("ProjectCode", "PaymentCode", "PaymentDate", "ReceiptCode", "No", "ReceiptDate",
+                   "Amount", "Currency", "Status", "RequiresTranslation", "AssignedTo", "Notes")
+_INVOICE_FIELDS = ("SupplierId", "DonorId", "ProjectCode", "InvoiceCode", "No", "Date", "Amount",
+                   "Currency", "Status", "RequiresTranslation", "AssignedTo", "Notes")
+
+
+def _patch(data, allowed_fields, normalizers=None):
+    """Return only fields the caller actually supplied.
+
+    Entity updates are PATCH-like even though their routes keep the existing
+    PUT URLs. Omitting a field must preserve it; only an explicit JSON null is
+    allowed to clear an optional field.
+    """
+    normalizers = normalizers or {}
+    return {
+        field: normalizers.get(field, lambda value: value)(data[field])
+        for field in allowed_fields
+        if field in data
+    }
+
+
+def _validate_status(value, allowed_statuses, label="Status"):
+    if value not in allowed_statuses:
+        raise ValueError(f"{label} is invalid")
+
+
+def _require_value(value, label):
+    if value is None or value == "":
+        raise ValueError(f"{label} is required")
+
+
+def _validate_currency(value):
+    if value not in _CURRENCIES:
+        raise ValueError("Currency is invalid")
+
+
+def _validate_amount(value, required=False):
+    if value is None or value == "":
+        if required:
+            raise ValueError("Amount is required")
+        return
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("Amount must be a number")
+    if not amount.is_finite() or amount < 0:
+        raise ValueError("Amount must be a non-negative number")
+
+
+def _get_existing(table, record_id, fields):
+    """Load only the fields needed to validate a partial update."""
+    res = (supabase.table(table)
+           .select(",".join(fields))
+           .eq("id", record_id)
+           .single()
+           .execute())
+    if not res.data:
+        raise ValueError("Record not found")
+    return res.data
+
+
+def _validate_project_currency(*, project_id=None, project_code=None, currency=None):
+    """Enforce the current one-currency-per-project business rule.
+
+    Receipts intentionally do not use this helper: a receipt may legitimately
+    differ from its payment because of bank deductions or commissions.
+    """
+    if currency is None or (project_id is None and project_code is None):
+        return
+
+    query = supabase.table("Projects").select("Currency")
+    if project_id is not None:
+        res = query.eq("id", project_id).single().execute()
+    else:
+        res = query.eq("ProjectCode", project_code).single().execute()
+
+    project = res.data
+    if not project:
+        raise ValueError("Selected project was not found")
+    if project.get("Currency") != currency:
+        raise ValueError("Currency must match the selected project's currency")
+
+
+def _ensure_payment_has_no_receipt(payment_id):
+    """Keep the API safe before the DB UNIQUE constraint is deployed.
+
+    This is a usability guard, not the final concurrency guarantee: the
+    database constraint in phase5_integrity_hardening.sql remains authoritative.
+    """
+    if payment_id is None or payment_id == "":
+        return
+    res = (supabase.table("Receipts")
+           .select("id")
+           .eq("PaymentCode", payment_id)
+           .limit(1)
+           .execute())
+    if res.data:
+        raise ValueError("This payment already has a receipt. Edit that receipt instead.")
 
 
 # ============================================================
@@ -247,8 +379,15 @@ def create_decision():
  
 @app.route('/api/projects', methods=['POST'])
 def create_project():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     try:
+        _require_value(data.get("ProjectCode"), "Project code")
+        _require_value(data.get("Subject"), "Subject")
+        _require_value(data.get("SupplierId"), "Supplier")
+        _validate_currency(data.get("Currency"))
+        _validate_amount(data.get("Budget"), required=True)
+        _validate_status(data.get("Status", "Active"), _PROJECT_STATUSES)
+
         res = supabase.table("Projects").insert({
             "ProjectCode":    data["ProjectCode"],
             "Subject":        data["Subject"],
@@ -264,17 +403,16 @@ def create_project():
 
         project_id = res.data[0]["id"]
 
-        # Auto-create an invoice for the project — mirrors the auto-receipt on
-        # payment. Invoices are project-grain, so one is created with the project.
-        # Inherits Supplier/Currency; Amount left blank (officer fills it); Status
-        # 'Missing' (under-claim); RequiresTranslation True (DB default / ~99% case).
-        supabase.table("Invoices").insert({
+        # A project starts with one draft invoice. Staff complete this row with
+        # the real document data instead of creating a second first invoice.
+        invoice_res = supabase.table("Invoices").insert({
             "ProjectCode":         data["ProjectCode"],
             "SupplierId":          data["SupplierId"],
             "Currency":            data.get("Currency"),
             "Status":              "Missing",
             "RequiresTranslation": True,
         }).execute()
+        invoice_id = invoice_res.data[0]["id"]
 
         # Seed the project-grain compliance slots as Missing (under-claim).
         # These 5 are per-project — they repeat across the project's payments.
@@ -284,15 +422,28 @@ def create_project():
                         "AlindiBelgesi", "Fotograflar")]
         ).execute()
 
-        return jsonify({"success": True, "id": project_id})
+        return jsonify({"success": True, "id": project_id, "invoice_id": invoice_id})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
  
  
 @app.route('/api/payments', methods=['POST'])
 def create_payment():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     try:
+        _require_value(data.get("SupplierId"), "Supplier")
+        _require_value(data.get("ProjectId"), "Project")
+        _require_value(data.get("DecisionId"), "Decision")
+        _require_value(data.get("Destination"), "Destination")
+        _validate_amount(data.get("Amount"), required=True)
+        _validate_currency(data.get("Currency"))
+        _validate_status(data.get("Status"), _PAYMENT_STATUSES)
+        _validate_project_currency(
+            project_id=data.get("ProjectId"), currency=data.get("Currency")
+        )
+
         # 1. Insert the payment
         res = supabase.table("Payments").insert({
             "PaymentCode":     data.get("PaymentCode"),
@@ -341,14 +492,22 @@ def create_payment():
 
         return jsonify({"success": True, "id": payment_id})
 
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
  
  
 @app.route('/api/receipts', methods=['POST'])
 def create_receipt():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     try:
+        _validate_amount(data.get("Amount"))
+        if data.get("Currency") is not None:
+            _validate_currency(data["Currency"])
+        _validate_status(data.get("Status") or "Missing", _DOCUMENT_STATUSES)
+        _ensure_payment_has_no_receipt(data.get("PaymentCode"))
+
         res = supabase.table("Receipts").insert({
             "ProjectCode": data.get("ProjectCode"),
             "PaymentCode": data.get("PaymentCode"),
@@ -358,20 +517,30 @@ def create_receipt():
             "ReceiptDate":        data.get("ReceiptDate"),
             "Amount":      data.get("Amount"),
             "Currency":    data.get("Currency"),
-            "Status":      data.get("Status"),
+            "Status":      data.get("Status") or "Missing",
             "RequiresTranslation": _to_bool(data.get("RequiresTranslation")),
             "AssignedTo":  data.get("AssignedTo"),
             "Notes":       data.get("Notes"),
         }).execute()
         return jsonify({"success": True, "id": res.data[0]["id"]})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
  
  
 @app.route('/api/invoices', methods=['POST'])
 def create_invoice():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     try:
+        _validate_amount(data.get("Amount"))
+        if data.get("Currency") is not None:
+            _validate_currency(data["Currency"])
+        _validate_status(data.get("Status") or "Missing", _DOCUMENT_STATUSES)
+        _validate_project_currency(
+            project_code=data.get("ProjectCode"), currency=data.get("Currency")
+        )
+
         res = supabase.table("Invoices").insert({
             "SupplierId":  data.get("SupplierId"),
             "DonorId":     data.get("DonorId"),
@@ -381,12 +550,14 @@ def create_invoice():
             "Date":        data.get("Date"),
             "Amount":      data.get("Amount"),
             "Currency":    data.get("Currency"),
-            "Status":      data.get("Status"),
+            "Status":      data.get("Status") or "Missing",
             "RequiresTranslation": _to_bool(data.get("RequiresTranslation")),
             "AssignedTo":  data.get("AssignedTo"),
             "Notes":       data.get("Notes"),
         }).execute()
         return jsonify({"success": True, "id": res.data[0]["id"]})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
  
@@ -397,14 +568,12 @@ def create_invoice():
  
 @app.route('/api/donors/<int:id>', methods=['PUT'])
 def update_donor(id):
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    patch = _patch(data, _DONOR_FIELDS)
+    if not patch:
+        return jsonify({"success": False, "error": "No fields to update"}), 400
     try:
-        supabase.table("Donors").update({
-            "DonorCode":     data["DonorCode"],
-            "DonorName":     data["DonorName"],
-            "Country":       data["Country"],
-            "ContactPerson": data.get("ContactPerson"),
-        }).eq("id", id).execute()
+        supabase.table("Donors").update(patch).eq("id", id).execute()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
@@ -412,13 +581,12 @@ def update_donor(id):
  
 @app.route('/api/suppliers/<int:id>', methods=['PUT'])
 def update_supplier(id):
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    patch = _patch(data, _SUPPLIER_FIELDS)
+    if not patch:
+        return jsonify({"success": False, "error": "No fields to update"}), 400
     try:
-        supabase.table("Suppliers").update({
-            "CompanyName":   data["CompanyName"],
-            "Country":       data["Country"],
-            "ContactPerson": data.get("ContactPerson"),
-        }).eq("id", id).execute()
+        supabase.table("Suppliers").update(patch).eq("id", id).execute()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
@@ -426,15 +594,12 @@ def update_supplier(id):
  
 @app.route('/api/decisions/<int:id>', methods=['PUT'])
 def update_decision(id):
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    patch = _patch(data, _DECISION_FIELDS)
+    if not patch:
+        return jsonify({"success": False, "error": "No fields to update"}), 400
     try:
-        supabase.table("Decisions").update({
-            "DecisionNumber": data["DecisionNumber"],
-            "DecisionDate":   data["DecisionDate"],
-            "Description":    data.get("Description"),
-            "Attendants":     data.get("Attendants"),
-            "Notes":          data.get("Notes"),
-        }).eq("id", id).execute()
+        supabase.table("Decisions").update(patch).eq("id", id).execute()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
@@ -442,91 +607,100 @@ def update_decision(id):
  
 @app.route('/api/projects/<int:id>', methods=['PUT'])
 def update_project(id):
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    patch = _patch(data, _PROJECT_FIELDS)
+    if not patch:
+        return jsonify({"success": False, "error": "No fields to update"}), 400
     try:
-        supabase.table("Projects").update({
-            "ProjectCode":    data["ProjectCode"],
-            "Subject":        data["Subject"],
-            "Description":    data.get("Description"),
-            "SupplierId":     data["SupplierId"],
-            "Budget":         data.get("Budget"),
-            "Currency":       data.get("Currency"),
-            "StartDate":      data.get("StartDate"),
-            "EndDate":        data.get("EndDate"),
-            "Status":         data.get("Status", "Active"),
-            "DriveFolderLink": data.get("DriveFolderLink"),
-        }).eq("id", id).execute()
+        if "Budget" in patch:
+            _validate_amount(patch["Budget"], required=True)
+        if "Currency" in patch:
+            _validate_currency(patch["Currency"])
+        if "Status" in patch:
+            _validate_status(patch["Status"], _PROJECT_STATUSES)
+        supabase.table("Projects").update(patch).eq("id", id).execute()
         return jsonify({"success": True})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
  
  
 @app.route('/api/payments/<int:id>', methods=['PUT'])
 def update_payment(id):
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    patch = _patch(data, _PAYMENT_FIELDS)
+    if not patch:
+        return jsonify({"success": False, "error": "No fields to update"}), 400
     try:
-        supabase.table("Payments").update({
-            "PaymentCode":     data.get("PaymentCode"),
-            "SupplierId":      data.get("SupplierId"),
-            "Destination":     data.get("Destination"),
-            "ProjectId":       data.get("ProjectId"),
-            "DonorId":         data.get("DonorId"),
-            "DecisionId":      data.get("DecisionId"),
-            "Bank":            data.get("Bank"),
-            "Amount":          data.get("Amount"),
-            "Currency":        data.get("Currency"),
-            "Status":          data.get("Status"),
-            "DeclarationDate": data.get("DeclarationDate"),
-            "PaymentDate":     data.get("PaymentDate"),
-            "ClosingDate":     data.get("ClosingDate"),
-        }).eq("id", id).execute()
+        if "Amount" in patch:
+            _validate_amount(patch["Amount"], required=True)
+        if "Currency" in patch:
+            _validate_currency(patch["Currency"])
+        if "Status" in patch:
+            _validate_status(patch["Status"], _PAYMENT_STATUSES)
+        for field, label in (("SupplierId", "Supplier"), ("ProjectId", "Project"),
+                             ("DecisionId", "Decision"), ("Destination", "Destination")):
+            if field in patch:
+                _require_value(patch[field], label)
+        if "ProjectId" in patch or "Currency" in patch:
+            existing = _get_existing("Payments", id, ("ProjectId", "Currency"))
+            _validate_project_currency(
+                project_id=patch.get("ProjectId", existing["ProjectId"]),
+                currency=patch.get("Currency", existing["Currency"]),
+            )
+        supabase.table("Payments").update(patch).eq("id", id).execute()
         return jsonify({"success": True})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
  
  
 @app.route('/api/receipts/<int:id>', methods=['PUT'])
 def update_receipt(id):
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    patch = _patch(data, _RECEIPT_FIELDS, {"RequiresTranslation": _to_bool})
+    if not patch:
+        return jsonify({"success": False, "error": "No fields to update"}), 400
     try:
-        supabase.table("Receipts").update({
-            "ProjectCode": data.get("ProjectCode"),
-            "PaymentCode": data.get("PaymentCode"),
-            "PaymentDate": data.get("PaymentDate"),
-            "ReceiptCode": data.get("ReceiptCode"),
-            "No":          data.get("No"),
-            "ReceiptDate":        data.get("ReceiptDate"),
-            "Amount":      data.get("Amount"),
-            "Currency":    data.get("Currency"),
-            "Status":      data.get("Status"),
-            "RequiresTranslation": _to_bool(data.get("RequiresTranslation")),
-            "AssignedTo":  data.get("AssignedTo"),
-            "Notes":       data.get("Notes"),
-        }).eq("id", id).execute()
+        if "Amount" in patch:
+            _validate_amount(patch["Amount"])
+        if "Currency" in patch:
+            _validate_currency(patch["Currency"])
+        if "Status" in patch:
+            _validate_status(patch["Status"], _DOCUMENT_STATUSES)
+        supabase.table("Receipts").update(patch).eq("id", id).execute()
         return jsonify({"success": True})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
  
  
 @app.route('/api/invoices/<int:id>', methods=['PUT'])
 def update_invoice(id):
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    patch = _patch(data, _INVOICE_FIELDS, {"RequiresTranslation": _to_bool})
+    if not patch:
+        return jsonify({"success": False, "error": "No fields to update"}), 400
     try:
-        supabase.table("Invoices").update({
-            "SupplierId":  data.get("SupplierId"),
-            "DonorId":     data.get("DonorId"),
-            "ProjectCode": data.get("ProjectCode"),
-            "InvoiceCode": data.get("InvoiceCode"),
-            "No":          data.get("No"),
-            "Date":        data.get("Date"),
-            "Amount":      data.get("Amount"),
-            "Currency":    data.get("Currency"),
-            "Status":      data.get("Status"),
-            "RequiresTranslation": _to_bool(data.get("RequiresTranslation")),
-            "AssignedTo":  data.get("AssignedTo"),
-            "Notes":       data.get("Notes"),
-        }).eq("id", id).execute()
+        if "Amount" in patch:
+            _validate_amount(patch["Amount"])
+        if "Currency" in patch and patch["Currency"] is not None:
+            _validate_currency(patch["Currency"])
+        if "Status" in patch:
+            _validate_status(patch["Status"], _DOCUMENT_STATUSES)
+        if "ProjectCode" in patch or "Currency" in patch:
+            existing = _get_existing("Invoices", id, ("ProjectCode", "Currency"))
+            _validate_project_currency(
+                project_code=patch.get("ProjectCode", existing["ProjectCode"]),
+                currency=patch.get("Currency", existing["Currency"]),
+            )
+        supabase.table("Invoices").update(patch).eq("id", id).execute()
         return jsonify({"success": True})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
  
@@ -727,4 +901,4 @@ if __name__ == '__main__':
     # VPS day: debug MUST be False in production — the Werkzeug debugger that
     # debug=True exposes on errors is an interactive Python console (= remote
     # code execution). Serve with gunicorn behind a reverse proxy instead.
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='127.0.0.1', port=5000)
