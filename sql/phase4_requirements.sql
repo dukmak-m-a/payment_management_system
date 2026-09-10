@@ -58,7 +58,7 @@ SELECT
     END AS receipt,
 
     CASE
-      WHEN r."RequiresTranslation" = false      THEN 'Unnecessary'
+      WHEN COALESCE(r."RequiresTranslation", true) = false THEN 'Unnecessary'
       WHEN r."Status" = 'Done'                   THEN 'Collected'
       WHEN r."Status" IN ('Translated','Sent')   THEN 'Requested'
       ELSE 'Missing'
@@ -82,6 +82,7 @@ SELECT
     agg.invoiced_in_hand,
 
     CASE
+      WHEN agg.has_unknown_spend                          THEN 'Missing'    -- unknown money/status must never look covered
       WHEN agg.spend_to_document = 0                     THEN 'Missing'    -- no non-returned spend yet
       WHEN agg.invoiced_in_hand >= agg.spend_to_document THEN 'Collected'  -- every spent unit documented
       WHEN agg.has_activity                              THEN 'Requested'  -- invoices in flight but short
@@ -102,7 +103,11 @@ CROSS JOIN LATERAL (
       -- money actually spent that needs documenting (returned payments excluded)
       COALESCE((SELECT SUM(pay."Amount") FROM public."Payments" pay
                 WHERE pay."ProjectId" = proj.id
-                  AND pay."Status" NOT IN ('Returned','Return-Closed')), 0) AS spend_to_document,
+                  AND COALESCE(pay."Status", '') NOT IN ('Returned','Return-Closed')), 0) AS spend_to_document,
+      -- an incomplete payment row cannot be allowed to lower the coverage bar
+      EXISTS (SELECT 1 FROM public."Payments" pay
+              WHERE pay."ProjectId" = proj.id
+                AND (pay."Amount" IS NULL OR pay."Status" IS NULL)) AS has_unknown_spend,
       -- invoices actually in hand (Received or later)
       COALESCE((SELECT SUM(inv."Amount") FROM public."Invoices" inv
                 WHERE inv."ProjectCode" = proj."ProjectCode"
@@ -114,14 +119,14 @@ CROSS JOIN LATERAL (
       -- translation aggregates (weakest-link across translation-requiring invoices)
       EXISTS (SELECT 1 FROM public."Invoices" inv
               WHERE inv."ProjectCode" = proj."ProjectCode"
-                AND inv."RequiresTranslation" = true) AS any_needs_translation,
+                AND COALESCE(inv."RequiresTranslation", true) = true) AS any_needs_translation,
       NOT EXISTS (SELECT 1 FROM public."Invoices" inv
                   WHERE inv."ProjectCode" = proj."ProjectCode"
-                    AND inv."RequiresTranslation" = true
+                    AND COALESCE(inv."RequiresTranslation", true) = true
                     AND inv."Status" IS DISTINCT FROM 'Done') AS all_translations_done,
       EXISTS (SELECT 1 FROM public."Invoices" inv
               WHERE inv."ProjectCode" = proj."ProjectCode"
-                AND inv."RequiresTranslation" = true
+                AND COALESCE(inv."RequiresTranslation", true) = true
                 AND inv."Status" IN ('Translated','Sent','Done')) AS any_translation_progress
 ) agg;
 

@@ -1,27 +1,34 @@
+<!-- Destination: repo root, replaces the current agent.md. Content is almost entirely
+     unchanged from the original — this file was already doing its job (pure on-demand
+     technical reference, no volatile state, no duplication with the other two files).
+     Only the cross-references at the top and in Known Gotchas were added. -->
+
 # agent.md — Payment / Compliance Document Tracking Engine — Technical Reference
 
 ## Role of this file
 
-This is the **what**: exact DB schema, API endpoints, and known
-implementation gotchas for the current codebase. It's written to be generic
-and reusable across deployments — the only client-specific values live in
-"Branding & Design" below, clearly marked as placeholders.
+This is the **what**: exact DB schema, API endpoints, and known implementation gotchas for the
+current codebase. It's written to be generic and reusable across deployments — the only
+client-specific values live in "Branding & Design" below, clearly marked as placeholders.
 
-- For the business narrative and architectural decisions behind the current
-  deployment (NGO/donor compliance tracking), see `project-context.md`.
-- For how Claude Code should behave while working in this repo, see
-  `CLAUDE.md`.
+- For the business narrative and architectural decisions behind the current deployment
+  (NGO/donor compliance tracking), see `project-context.md`.
+- For how Claude Code should behave while working in this repo, see `CLAUDE.md`.
+- For the field-audit checklist that loads automatically when editing `app.py`, `static/app.js`,
+  or `sql/**`, see `.claude/rules/schema-audit.md`. The project-specific
+  `compliance-schema-audit` skill (`.claude/skills/`) runs that checklist pre-loaded with the
+  tables and gotchas below.
 
-Don't duplicate content across these three files — if something changes,
-update it in the one file whose job it is, not all three.
+Don't duplicate content across these files — if something changes, update it in the one file
+whose job it is, not all three.
 
 ---
 
 ## Project Overview
 
-A full-stack web application for managing payments, projects, suppliers,
-donors, decisions, invoices, and receipts. Built with Flask (Python) backend
-and vanilla JS frontend, using Supabase (PostgreSQL) as the database.
+A full-stack web application for managing payments, projects, suppliers, donors, decisions,
+invoices, and receipts. Built with Flask (Python) backend and vanilla JS frontend, using
+Supabase (PostgreSQL) as the database.
 
 ---
 
@@ -29,14 +36,14 @@ and vanilla JS frontend, using Supabase (PostgreSQL) as the database.
 
 | Layer | Technology |
 |---|---|
-| Backend | Python 3, Flask, flask-cors |
+| Backend | Python 3, Flask |
 | Database | Supabase (PostgreSQL) via `supabase-py` |
 | Frontend | Vanilla JS, HTML5, CSS3 (no framework) |
 | Fonts | Configurable — see Branding & Design |
 
 ### Install dependencies
 ```bash
-pip install Flask flask-cors supabase
+pip install -r requirements.txt
 ```
 
 ### Run the app
@@ -59,20 +66,19 @@ project/
 │   └── index.html          # Single page app shell + navigation
 └── static/
     ├── app.js              # All frontend logic, table configs, CRUD
-    └── style.css           # Styling, theme (see Branding & Design)
+    └── style.css            # Styling, theme (see Branding & Design)
 ```
 
 ---
 
 ## Database Schema (Supabase / PostgreSQL)
 
-> Verified directly against a live Supabase schema export (not reconstructed
-> from application code). **Updated 2026-07-19 after the Status-merge migration
-> landed:** `Fatura` (Invoices), `Makbuz` (Receipts), `Payments.ReceiptCode`,
-> and `Suppliers.TaxId` have all been **dropped**; `RequiresTranslation`
-> (boolean, default `true`) and `AssignedTo` (text) were **added** to Invoices
-> and Receipts. The DDL below reflects the post-migration schema. (Gotchas #7
-> and #8 are now resolved — kept below for history.)
+> Verified directly against a live Supabase schema export (not reconstructed from application
+> code). **Updated 2026-07-19 after the Status-merge migration landed:** `Fatura` (Invoices),
+> `Makbuz` (Receipts), `Payments.ReceiptCode`, and `Suppliers.TaxId` have all been **dropped**;
+> `RequiresTranslation` (boolean, default `true`) and `AssignedTo` (text) were **added** to
+> Invoices and Receipts. The DDL below reflects the post-migration schema. (Gotchas #7 and #8 are
+> now resolved — kept below for history.)
 
 ```sql
 -- WARNING: schema is for reference only, not meant to be run as-is.
@@ -199,16 +205,23 @@ CREATE TABLE public.Invoices (
 Built in `sql/phase4_requirements.sql` (run separately; not part of the DDL above).
 
 - **`PaymentRequirements`** (payment-grain human slots): `PaymentId` → `Payments.id`
-  (ON DELETE CASCADE), `DocType` ∈ {Dekont, TransferOrder, OdemeEmri}, `Status`
-  four-state (Missing/Unnecessary/Requested/Collected, DEFAULT `Missing`),
-  `UNIQUE(PaymentId, DocType)`.
-- **`ProjectRequirements`** (project-grain human slots): `ProjectId` → `Projects.id`,
-  `DocType` ∈ {Contract, Karar, TeslimBelgesi, AlindiBelgesi, Fotograflar}, same Status.
-- **Views** (read-only, computed live — never stored): `receipt_compliance`
-  (payment-grain), `invoice_compliance` (project-grain amount-coverage),
-  `compliance_report` (wide, one row per payment, mirrors the legacy sheet; also exposes
-  `payment_id`/`project_id` for the edit path). The 4 computed slots
-  (invoice/fatura/receipt/makbuz) come only from the views, never from a table.
+  (ON DELETE CASCADE), `DocType` ∈ {Dekont, TransferOrder, OdemeEmri}, `Status` four-state
+  (Missing/Unnecessary/Requested/Collected, DEFAULT `Missing`), `UNIQUE(PaymentId, DocType)`.
+- **`ProjectRequirements`** (project-grain human slots): `ProjectId` → `Projects.id`, `DocType`
+  ∈ {Contract, Karar, TeslimBelgesi, AlindiBelgesi, Fotograflar}, same Status.
+- **Views** (read-only, computed live — never stored): `receipt_compliance` (payment-grain),
+  `invoice_compliance` (project-grain amount-coverage), `compliance_report` (wide, one row per
+  payment, mirrors the legacy sheet; also exposes `payment_id`/`project_id` for the edit path).
+  The 4 computed slots (invoice/fatura/receipt/makbuz) come only from the views, never from a
+  table.
+
+`sql/phase5_integrity_hardening.sql` is the follow-up safety migration. It adds fail-closed data
+checks, status/amount/currency constraints, database-level one-currency-per-project triggers,
+one-receipt-per-payment protection, and report indexes. Receipt currency remains intentionally
+independent because bank deductions or commissions can make it differ from its payment. **Applied
+successfully in Supabase on 2026-08-31.** The required Phase 4 view refresh also completed
+successfully ("Success. No rows returned"). Application-level verification still remains a
+separate step.
 
 ## Key Relationships & FK Notes
 
@@ -248,8 +261,8 @@ The DELETE route applies `.capitalize()` to the table name from the URL.
 
 ## Authentication (added 2026-07-19)
 
-Hand-rolled Flask session auth — no Flask-Login, no Supabase Auth (both
-consciously deferred; see `project-context.md` §4b).
+Hand-rolled Flask session auth — no Flask-Login, no Supabase Auth (both consciously deferred;
+see `project-context.md` §4b).
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -259,46 +272,45 @@ consciously deferred; see `project-context.md` §4b).
 
 Mechanics (all in `app.py`, Authentication section):
 
-- **Default-deny `before_request` guard**: every route requires
-  `session['user_id']` except allowlisted endpoints (`login`, `static`).
-  API paths (`/api/*`) get `401` JSON; page paths redirect to `/login`.
-  Adding a new public route = add its *endpoint name* to that allowlist.
-- Passwords: `werkzeug.security` `generate_password_hash` /
-  `check_password_hash` (constant-time; never compare hashes with `==`).
-  `generate_hash.py` produces hashes for manual row creation.
-- Unknown usernames are checked against a startup-generated `_DUMMY_HASH`
-  so response timing doesn't reveal which usernames exist; login failures
-  return one generic message for the same reason.
+- **Default-deny `before_request` guard**: every route requires `session['user_id']` except
+  allowlisted endpoints (`login`, `static`). API paths (`/api/*`) get `401` JSON; page paths
+  redirect to `/login`. Adding a new public route = add its *endpoint name* to that allowlist.
+- Passwords: `werkzeug.security` `generate_password_hash` / `check_password_hash`
+  (constant-time; never compare hashes with `==`). `generate_hash.py` produces hashes for manual
+  row creation.
+- Unknown usernames are checked against a startup-generated `_DUMMY_HASH` so response timing
+  doesn't reveal which usernames exist; login failures return one generic message for the same
+  reason.
 - Session fixation: `session.clear()` before setting keys on login.
-- Cookie config: `HttpOnly`, `SameSite=Lax`, 8h lifetime.
-  `SESSION_COOKIE_SECURE` commented until HTTPS (VPS day).
-- In-process throttle: 5 failures / 15 min per username (dict, resets on
-  restart — Flask-Limiter is the production replacement).
-- **App refuses to start without `FLASK_SECRET_KEY` in `.env`** — that key
-  signs the session cookie; a guessable key = forgeable logins. Generate:
+- Cookie config: `HttpOnly`, `SameSite=Lax`, 8h lifetime. `SESSION_COOKIE_SECURE` commented
+  until HTTPS (VPS day).
+- In-process throttle: 5 failures / 15 min per username (dict, resets on restart —
+  Flask-Limiter is the production replacement).
+- **App refuses to start without `FLASK_SECRET_KEY` in `.env`** — that key signs the session
+  cookie; a guessable key = forgeable logins. Generate:
   `python -c "import secrets; print(secrets.token_hex(32))"`.
-- `flask_cors`/`CORS(app)` **removed**: frontend is same-origin; n8n calls
-  server-to-server (CORS never restricted non-browser clients anyway). Open
-  CORS + cookie auth would have let any website ride a logged-in session.
-- Frontend: `apiFetch()` wrapper in `app.js` redirects to `/login` on any
-  `401` (expired/cleared session mid-use).
+- `flask_cors`/`CORS(app)` **removed**: frontend is same-origin; n8n calls server-to-server
+  (CORS never restricted non-browser clients anyway). Open CORS + cookie auth would have let
+  any website ride a logged-in session.
+- Frontend: `apiFetch()` wrapper in `app.js` redirects to `/login` on any `401`
+  (expired/cleared session mid-use).
 
 ### VPS-day hardening checklist (deferred while local-only, MANDATORY before internet exposure)
 
 1. `debug=False` + serve via gunicorn behind nginx/caddy (Werkzeug debugger = RCE).
 2. HTTPS via the reverse proxy, then enable `SESSION_COOKIE_SECURE=True`.
 3. Flask-Limiter for real rate limiting (per-IP + per-username, survives restarts).
-4. Error-message hygiene: stop returning raw `str(e)` to clients (leaks DB internals);
-   log server-side, return generic messages.
-5. `innerHTML` XSS fix (Phase 6 — **higher priority now**: with session cookies,
-   XSS ⇒ session theft even with HttpOnly protecting the cookie itself, since
-   injected JS can just call the API directly).
-6. Check which Supabase key `.env` holds (anon vs service_role) and enable RLS —
-   Flask auth does NOT protect Supabase's own REST endpoint if the key leaks.
-7. `requirements.txt` slimming (already Phase 6; it's a full pip-freeze incl.
-   `pywin32`, which breaks Linux installs).
-8. Consider CSRF tokens if any endpoint ever accepts form-encoded POSTs
-   cross-origin (SameSite=Lax + JSON-only covers the current surface).
+4. Error-message hygiene: stop returning raw `str(e)` to clients (leaks DB internals); log
+   server-side, return generic messages.
+5. `innerHTML` XSS fix (Phase 6 — higher priority now: with session cookies, XSS ⇒ session
+   theft even with HttpOnly protecting the cookie itself, since injected JS can just call the
+   API directly).
+6. Check which Supabase key `.env` holds (anon vs service_role) and enable RLS — Flask auth does
+   NOT protect Supabase's own REST endpoint if the key leaks.
+7. `requirements.txt` slimming (already Phase 6; it's a full pip-freeze incl. `pywin32`, which
+   breaks Linux installs).
+8. Consider CSRF tokens if any endpoint ever accepts form-encoded POSTs cross-origin
+   (SameSite=Lax + JSON-only covers the current surface).
 
 ---
 
@@ -315,8 +327,8 @@ else:
 Color coding in frontend: green ≥ 30 days, yellow < 30, red < 10.
 
 ### Auto-create Receipt on Payment
-When a new payment is POSTed, a receipt is automatically created, inheriting
-Project / Payment / Date / Amount / Currency from the payment:
+When a new payment is POSTed, a receipt is automatically created, inheriting Project / Payment /
+Date / Amount / Currency from the payment:
 ```python
 # After inserting payment:
 payment_id = payment["id"]           # numeric — used as Receipts.PaymentCode FK
@@ -331,17 +343,17 @@ supabase.table("Receipts").insert({
     "RequiresTranslation": True,           # matches DB default (added 2026-07-19)
 }).execute()
 ```
-**Bug fixed 2026-07-19:** this insert previously wrote `payment_code` (the TEXT
-`PaymentCode`) into the BIGINT FK column — it threw a type error the moment a
-payment carried any non-numeric PaymentCode, leaving the payment saved but the
-auto-receipt un-created. It now uses the numeric `payment_id`. The receipt does
-NOT store the text code anywhere; `get_receipts` resolves it live via the FK join.
+**Bug fixed 2026-07-19:** this insert previously wrote `payment_code` (the TEXT `PaymentCode`)
+into the BIGINT FK column — it threw a type error the moment a payment carried any non-numeric
+PaymentCode, leaving the payment saved but the auto-receipt un-created. It now uses the numeric
+`payment_id`. The receipt does NOT store the text code anywhere; `get_receipts` resolves it live
+via the FK join.
 
-### Auto-create Invoice on Project
-When a new project is POSTed, an invoice is auto-created for it (invoices are
-project-grain), inheriting `ProjectCode` / `SupplierId` / `Currency`; `Status='Missing'`
-(under-claim), `RequiresTranslation=True`. Amount is left blank for the officer to fill.
-Mirrors the auto-create-receipt-on-payment pattern.
+### Invoices on Projects
+Invoices are project-grain, but their number is unknown at project creation. The app therefore
+does **not** create a placeholder invoice when a project is created. Officers create real
+invoice rows when those documents exist. This avoids a blank, translation-required placeholder
+permanently blocking the project's computed Invoice Translation / Closed state.
 
 ### DriveFolderLink (Projects)
 Stored as plain text URL. Rendered as a clickable folder icon in the table.
@@ -365,9 +377,9 @@ Each table has:
 - `displayNames`: human-readable column headers
 - `formFields`: field definitions for the add/edit modal
 
-**Do not assume `columns`, `formFields`, and the backend's insert/update dict
-agree with each other.** All three need independent verification — see
-Known Gotchas #7 and #8 for two real cases where they didn't.
+**Do not assume `columns`, `formFields`, and the backend's insert/update dict agree with each
+other.** All three need independent verification — see Known Gotchas #7 and #8 for two real
+cases where they didn't, and `.claude/rules/schema-audit.md` for the checklist to run.
 
 ### Lookup types in formFields
 - `lookup: 'suppliers'` → uses `item.id` as value, `item.CompanyName` as label
@@ -378,16 +390,16 @@ Known Gotchas #7 and #8 for two real cases where they didn't.
 - `lookup: 'payments'` → uses `item.id` as value, `PaymentCode — Amount Currency` as label
 
 ### Column order
-Stored per-table in `localStorage` under key `columnOrders`.
-If a ghost column appears (e.g. from old data), clear localStorage to reset.
+Stored per-table in `localStorage` under key `columnOrders`. If a ghost column appears (e.g.
+from old data), clear localStorage to reset.
 
 ---
 
 ## Branding & Design (personalize per deployment)
 
-This is the only section of this file that should differ between client
-deployments. Replace the placeholders below when setting up for a specific
-client, then this note can be deleted for that deployment's copy.
+This is the only section of this file that should differ between client deployments. Replace
+the placeholders below when setting up for a specific client, then this note can be deleted for
+that deployment's copy.
 
 | Setting | Placeholder | Notes |
 |---|---|---|
@@ -401,37 +413,105 @@ client, then this note can be deleted for that deployment's copy.
 
 ## Known Gotchas
 
-1. **Supabase sequence desync** — if you get `duplicate key violates unique constraint` on insert, run:
+The three-way audit checklist that catches most of these lives in `.claude/rules/schema-audit.md`
+(auto-loads when you touch `app.py`, `static/app.js`, or `sql/**`) and in the
+`compliance-schema-audit` skill.
+
+1. **Supabase sequence desync** — if you get `duplicate key violates unique constraint` on
+   insert, run:
    ```sql
    SELECT setval(pg_get_serial_sequence('"TableName"', 'id'), (SELECT MAX(id) FROM "TableName"));
    ```
    Run for all tables after any manual data import.
 
-2. **Case-sensitive table names** — always quote table names in SQL: `"Payments"` not `payments`.
+2. **Case-sensitive table names** — always quote table names in SQL: `"Payments"` not
+   `payments`.
 
 3. **Projects has no DonorId** — do not attempt to join Donors from Projects queries.
 
-4. **Receipts.PaymentCode is BIGINT** — always pass `Payments.id` (integer), never the text `PaymentCode`.
+4. **Receipts.PaymentCode is BIGINT** — always pass `Payments.id` (integer), never the text
+   `PaymentCode`.
 
-5. **DELETE route uses `.capitalize()`** — URL table names are auto-capitalized, so `/api/payments/1` maps to `"Payments"`.
+5. **DELETE route uses `.capitalize()`** — URL table names are auto-capitalized, so
+   `/api/payments/1` maps to `"Payments"`.
 
-6. **localStorage column orders** — if wrong columns appear in the UI, clear `columnOrders` from localStorage and hard refresh.
+6. **localStorage column orders** — if wrong columns appear in the UI, clear `columnOrders`
+   from localStorage and hard refresh.
 
-7. **RESOLVED 2026-07-19 — `Fatura` (Invoices) / `Makbuz` (Receipts) dropped.** These were real DB columns the backend never wrote (the frontend offered a dropdown, but the four Invoice/Receipt endpoints built an explicit field list that omitted them, silently discarding any value). Both columns are now dropped from the DB and both form fields removed from `tableConfigs`. Kept for history.
+7. **RESOLVED 2026-07-19 — `Fatura` (Invoices) / `Makbuz` (Receipts) dropped.** These were real
+   DB columns the backend never wrote (the frontend offered a dropdown, but the four
+   Invoice/Receipt endpoints built an explicit field list that omitted them, silently discarding
+   any value). Both columns are now dropped from the DB and both form fields removed from
+   `tableConfigs`. Kept for history.
 
-8. **RESOLVED 2026-07-19 — `Payments.ReceiptCode` dropped.** It used to silently null on every `update_payment()` save (the form had dropped the field, but the backend still wrote `data.get("ReceiptCode")` → `None`). The column is now dropped and the key removed from `update_payment()`. **`Receipts.ReceiptCode` is a different, unrelated column on another table and stays** — it holds the receipt document's own code (that column is NOT the payment's text code; the earlier "stores the text PaymentCode" description was wrong). Kept for history.
+8. **RESOLVED 2026-07-19 — `Payments.ReceiptCode` dropped.** It used to silently null on every
+   `update_payment()` save (the form had dropped the field, but the backend still wrote
+   `data.get("ReceiptCode")` → `None`). The column is now dropped and the key removed from
+   `update_payment()`. **`Receipts.ReceiptCode` is a different, unrelated column on another
+   table and stays** — it holds the receipt document's own code (that column is NOT the
+   payment's text code; the earlier "stores the text PaymentCode" description was wrong). Kept
+   for history.
 
-9. **PARTLY RESOLVED 2026-07-19 — badge classes added.** `style.css` now has classes for the six-stage enum (`Missing/Requested/Received/Translated/Sent/Done`) plus `On-Hold` (Projects) and `Return-Closed` (Payments). Remaining cleanup (harmless): dead classes with no matching value anywhere — `status-pending`, `status-approved`, `status-rejected`, `status-paid`, `status-verified`, `status-suspended` — still present, worth pruning in Phase 6.
+9. **PARTLY RESOLVED 2026-07-19 — badge classes added.** `style.css` now has classes for the
+   six-stage enum (`Missing/Requested/Received/Translated/Sent/Done`) plus `On-Hold` (Projects)
+   and `Return-Closed` (Payments). Remaining cleanup (harmless): dead classes with no matching
+   value anywhere — `status-pending`, `status-approved`, `status-rejected`, `status-paid`,
+   `status-verified`, `status-suspended` — still present, worth pruning in Phase 6.
 
-10. **RESOLVED 2026-07-19 — auto-create receipt FK bug.** `create_payment()`'s auto-receipt wrote the TEXT `PaymentCode` into the BIGINT `Receipts.PaymentCode` FK (would error on any non-numeric PaymentCode, leaving the payment saved but no receipt). Now writes the numeric `payment_id`. See Business Logic → Auto-create Receipt on Payment.
+10. **RESOLVED 2026-07-19 — auto-create receipt FK bug.** `create_payment()`'s auto-receipt
+    wrote the TEXT `PaymentCode` into the BIGINT `Receipts.PaymentCode` FK (would error on any
+    non-numeric PaymentCode, leaving the payment saved but no receipt). Now writes the numeric
+    `payment_id`. See Business Logic → Auto-create Receipt on Payment.
 
-11. **Shared Supabase client is not concurrency-safe (mitigated, not fixed).** The single global `supabase` client (`app.py`) is shared across Flask's dev-server threads; concurrent requests collide on its socket → `500 [Errno 11] Resource temporarily unavailable` (EAGAIN). Surfaced when the UI fired 5 lookup fetches via `Promise.all`. **Mitigated 2026-07-19** by loading those lookups sequentially in `loadLookupData` — but that only removes the UI's own burst. The real fix (per-request / thread-local client, or a serialized server) is a **Phase 5** task, when n8n hits the API concurrently with the UI.
+11. **RESOLVED 2026-08-31 — Supabase client concurrency.** The old module-level `supabase`
+    client was shared across Flask threads, so concurrent UI requests could collide on its socket
+    and throw `500 [Errno 11] Resource temporarily unavailable` (EAGAIN). `app.py` now uses a
+    Flask request-local client stored on `g` and exposed through a `LocalProxy`; every request,
+    including n8n calls, gets its own client. `loadLookupData()` therefore uses `Promise.all`
+    again for its five independent requests. Normal browser verification completed 2026-08-31;
+    this is not yet a production load test.
 
-12. **OPEN, PRIORITY before populating real data (found 2026-07-24) — editing `Projects.ProjectCode` (or `Payments.PaymentCode`) breaks once children exist.** `Invoices.ProjectCode` and `Receipts.ProjectCode` are text FKs into `Projects(ProjectCode)` (`agent.md:191`, `:159`); neither constraint declares `ON UPDATE CASCADE`, so Postgres's default `NO ACTION` applies. The moment any Invoice/Receipt row references a given `ProjectCode`, `update_project()` (`app.py:448`) trying to change that same row's `ProjectCode` gets rejected by Postgres with a raw foreign-key-violation error — which `except Exception as e: return jsonify({"success": False, "error": str(e)})` (`app.py:460-461`) ships straight to the browser, unexplained. Same shape of risk on the `Payments.PaymentCode` side if it's ever made an FK target. Fix options: add `ON UPDATE CASCADE` to both FK constraints (lets the code propagate automatically), or make `ProjectCode`/`PaymentCode` immutable after creation (drop them from the `update_*` write dicts) and require a delete+recreate instead. Needs a decision before real data goes in, since a live typo-fix on an in-use `ProjectCode` would hit this right away.
+12. **OPEN, PRIORITY before populating real data (found 2026-07-24) — editing
+    `Projects.ProjectCode` (or `Payments.PaymentCode`) breaks once children exist.**
+    `Invoices.ProjectCode` and `Receipts.ProjectCode` are text FKs into `Projects(ProjectCode)`
+    (`agent.md:191`, `:159`); neither constraint declares `ON UPDATE CASCADE`, so Postgres's
+    default `NO ACTION` applies. The moment any Invoice/Receipt row references a given
+    `ProjectCode`, `update_project()` (`app.py:448`) trying to change that same row's
+    `ProjectCode` gets rejected by Postgres with a raw foreign-key-violation error — which
+    `except Exception as e: return jsonify({"success": False, "error": str(e)})`
+    (`app.py:460-461`) ships straight to the browser, unexplained. Same shape of risk on the
+    `Payments.PaymentCode` side if it's ever made an FK target. Fix options: add
+    `ON UPDATE CASCADE` to both FK constraints (lets the code propagate automatically), or make
+    `ProjectCode`/`PaymentCode` immutable after creation (drop them from the `update_*` write
+    dicts) and require a delete+recreate instead. Needs a decision before real data goes in,
+    since a live typo-fix on an in-use `ProjectCode` would hit this right away.
 
-13. **RESOLVED 2026-07-25 — `Receipts.PaymentCode` key collision nulled the Receipt↔Payment link on every edit.** `get_receipts()` used to overwrite the raw numeric `Receipts.PaymentCode` FK with the joined `Payments.PaymentCode` text under the same JSON key before responding. The edit form's `<select>` (`lookup: 'payments'`, options keyed by numeric `item.id` — see Frontend Architecture → Lookup types) could never match a text value against those options, so it silently fell back to the blank placeholder and saved `PaymentCode: null` on every edit unless a specialist manually reselected the payment — breaking the FK, and with it `receipt_compliance`'s join, on any receipt that got edited. Fixed by splitting the key: `get_receipts()` now leaves the raw `PaymentCode` FK untouched in the response and adds a separate `paymentCodeDisplay` key carrying the joined text code; Receipts' `columns`/`displayNames` show `paymentCodeDisplay`, while `formFields` still binds the edit `<select>` to the raw `PaymentCode`.
+13. **RESOLVED 2026-07-25 — `Receipts.PaymentCode` key collision nulled the Receipt↔Payment
+    link on every edit.** `get_receipts()` used to overwrite the raw numeric `Receipts.PaymentCode`
+    FK with the joined `Payments.PaymentCode` text under the same JSON key before responding.
+    The edit form's `<select>` (`lookup: 'payments'`, options keyed by numeric `item.id` — see
+    Frontend Architecture → Lookup types) could never match a text value against those options,
+    so it silently fell back to the blank placeholder and saved `PaymentCode: null` on every
+    edit unless a specialist manually reselected the payment — breaking the FK, and with it
+    `receipt_compliance`'s join, on any receipt that got edited. Fixed by splitting the key:
+    `get_receipts()` now leaves the raw `PaymentCode` FK untouched in the response and adds a
+    separate `paymentCodeDisplay` key carrying the joined text code; Receipts' `columns`/
+    `displayNames` show `paymentCodeDisplay`, while `formFields` still binds the edit `<select>`
+    to the raw `PaymentCode`.
 
-14. **RESOLVED 2026-07-25 — `viewDetails()` leaked raw/unmapped keys on the "More Details" page.** `viewDetails()` (`app.js`) built its field list from `Object.keys(record)` — the *entire* raw API response — instead of a curated list, so any backend key with no `displayNames` entry rendered with an ugly raw-key fallback label. This was invisible for `Receipts.PaymentCode` specifically only because gotcha #13's bug always overwrote that key before serialization; fixing #13 correctly re-exposed the raw FK, which then leaked into "More Details" as a second, wrongly-labeled `PAYMENTCODE` row next to the correct `paymentCodeDisplay` row. Same flaw affects any table with a raw FK id missing from `displayNames` — confirmed also present for Invoices' `SupplierId`/`DonorId`, a pre-existing leak unrelated to #13 that was fixed by the same change. Fixed by sourcing `viewDetails()`'s field list from `getColumnOrder(currentTable)` — the same source `renderTable()` already uses — so the Details view always mirrors exactly what the table shows, never the raw API payload.
+14. **RESOLVED 2026-07-25 — `viewDetails()` leaked raw/unmapped keys on the "More Details"
+    page.** `viewDetails()` (`app.js`) built its field list from `Object.keys(record)` — the
+    *entire* raw API response — instead of a curated list, so any backend key with no
+    `displayNames` entry rendered with an ugly raw-key fallback label. This was invisible for
+    `Receipts.PaymentCode` specifically only because gotcha #13's bug always overwrote that key
+    before serialization; fixing #13 correctly re-exposed the raw FK, which then leaked into
+    "More Details" as a second, wrongly-labeled `PAYMENTCODE` row next to the correct
+    `paymentCodeDisplay` row. Same flaw affects any table with a raw FK id missing from
+    `displayNames` — confirmed also present for Invoices' `SupplierId`/`DonorId`, a pre-existing
+    leak unrelated to #13 that was fixed by the same change. Fixed by sourcing `viewDetails()`'s
+    field list from `getColumnOrder(currentTable)` — the same source `renderTable()` already
+    uses — so the Details view always mirrors exactly what the table shows, never the raw API
+    payload.
 
 ---
 
